@@ -400,7 +400,6 @@ export function setGlassThemeSettings(settings: Partial<GlassThemeSettings>) {
   window.dispatchEvent(new Event(GLASS_SETTINGS_CHANGE_EVENT));
 }
 
-export async function importCustomThemeCss(path: string) {
-  await invoke("custom_theme_css_import", { path });
-  setAppTheme("custom");
+export async function importCustomThemeCss() {
+  if (await invoke<boolean>("custom_theme_css_import")) setAppTheme("custom");
 }

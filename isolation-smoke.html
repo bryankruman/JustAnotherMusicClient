@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Isolation smoke test</title></head>
+  <body>
+    <div id="result">pending</div>
+    <button id="play" hidden>Play official sample</button>
+    <div id="host"></div>
+    <script type="module">
+      import { evaluatePlayerScript } from "/src/datasource/youtube/isolatedPlayerScript.ts";
+      import { createIsolatedYouTubePlayer } from "/src/player/isolatedYouTubePlayer.ts";
+      const result = document.getElementById("result");
+      try {
+        const value = await evaluatePlayerScript("return { sig: 'smoke-sig', n: 'smoke-n' };");
+        if (value.sig !== "smoke-sig" || value.n !== "smoke-n") throw new Error("evaluator result mismatch");
+        const boundary = await evaluatePlayerScript("try { return { sig: window.parent.document.title }; } catch (error) { return { sig: 'parent-blocked' }; }");
+        if (boundary.sig !== "parent-blocked") throw new Error("sandbox accessed parent document");
+        result.textContent = "evaluator and parent boundary passed; player pending";
+        if (new URLSearchParams(location.search).has("evaluatorOnly")) {
+          result.textContent = "evaluator and parent boundary passed";
+        } else {
+        let cueResolve;
+        let cueReject;
+        let playResolve;
+        let playReject;
+        const playing = new Promise((resolve, reject) => { playResolve = resolve; playReject = reject; });
+        const cued = new Promise((resolve, reject) => { cueResolve = resolve; cueReject = reject; });
+        const shell = document.createElement("iframe");
+        shell.src = "/isolated-player-shell.html";
+        shell.width = "200";
+        shell.height = "200";
+        document.getElementById("host").appendChild(shell);
+        const player = await createIsolatedYouTubePlayer({
+          onStateChange: (state, videoId) => {
+            if (state === 5 && videoId === "M7lc1UVf-VE") cueResolve();
+            if (state === 1 && videoId === "M7lc1UVf-VE") playResolve();
+          },
+          onError: (code) => {
+            cueReject(new Error(`YouTube cue error ${code}`));
+            playReject(new Error(`YouTube playback error ${code}`));
+          },
+        });
+        const remoteFrame = shell.contentDocument?.querySelector("#players iframe");
+        if (!remoteFrame || remoteFrame.contentDocument !== null) throw new Error("YouTube script frame was not cross-origin to its shell");
+        result.textContent = "evaluator and player ready passed; cue pending";
+        player.cueVideoById("M7lc1UVf-VE");
+        await Promise.race([cued, new Promise((_, reject) => setTimeout(() => reject(new Error("cue timed out")), 15_000))]);
+        result.textContent = "evaluator, frame origin boundary, player ready, and video cue passed; playback pending";
+        const playButton = document.getElementById("play");
+        playButton.hidden = false;
+        playButton.addEventListener("click", async () => {
+          playButton.disabled = true;
+          try {
+            player.loadVideoById("M7lc1UVf-VE");
+            await Promise.race([playing, new Promise((_, reject) => setTimeout(() => reject(new Error("playback timed out")), 15_000))]);
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            if (player.getCurrentTime() <= 0) throw new Error("playback did not advance");
+            result.textContent = "evaluator, frame origin boundary, player ready, cue, playback state, and time advance passed";
+          } catch (error) {
+            result.textContent = `failed: ${error instanceof Error ? error.message : String(error)}`;
+          } finally {
+            player.destroy();
+          }
+        }, { once: true });
+        }
+      } catch (error) {
+        result.textContent = `failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    </script>
+  </body>
+</html>

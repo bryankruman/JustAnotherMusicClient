@@ -9,6 +9,14 @@ import {
   IconSearch,
   IconX,
 } from "@tabler/icons-react";
+import { formatLikedDate, lookupMissingLikedDates, syncLikedDates, useLikedDates } from "../../datasource/youtube/likedDates";
+import { playlistDateOrder } from "../../datasource/youtube/playlistSnapshot";
+import { estimateLikedDates, formatLikedEstimate } from "../../datasource/youtube/likedDateEstimates";
+import { usePlaylistWindow } from "./usePlaylistWindow";
+import { buildLikedTimeline } from "./likedTimeline";
+import { LikedTimeline } from "../components/LikedTimeline";
+import { matchesLikedDate, type LikedDateFilter } from "../../datasource/youtube/likedDateFilter";
+import { LikedSongTools } from "../components/LikedSongTools";
 import type { Playlist, Track } from "../../datasource/types";
 import type { LibraryController } from "../../player/LibraryController";
 import type { PlayerControllerActions } from "../../player/playerStore";
@@ -99,6 +107,8 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
   const [sort, setSort] = useState<PlaylistSort>("dateAdded");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [playlistSearchQuery, setPlaylistSearchQuery] = useState("");
+  const [dateFilter, setDateFilter] = useState<LikedDateFilter>({ period: "all", from: "", to: "" });
+  const [isCheckingLikes, setIsCheckingLikes] = useState(false);
   const [dropTargetIndex, setDropTargetIndex] = useState<{ localPath: string; insertAfter: boolean } | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const playlistSearchInputRef = useRef<HTMLInputElement | null>(null);
@@ -119,6 +129,26 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
   tracksRef.current = tracks;
 
   const isLocalPlaylistView = playlist ? isLocalPlaylist(playlist) : false;
+  const isLikedPlaylist = playlist?.kind === "liked-songs" || playlist?.id === "LM";
+  const likedDates = useLikedDates(isLikedPlaylist);
+  const knownDateCount = useMemo(() => tracks.filter((track) =>
+    Number.isFinite(Date.parse(likedDates.dates[track.id] ?? ""))).length, [tracks, likedDates.dates]);
+  const estimates = useMemo(() => isLikedPlaylist
+    ? estimateLikedDates(tracks, likedDates.dates, likedDates.publications) : {},
+    [isLikedPlaylist, tracks, likedDates.dates, likedDates.publications, likedDates.syncedAt]);
+  const estimatedCount = Object.keys(estimates).length;
+
+  useEffect(() => {
+    if (!isLikedPlaylist) return;
+    void syncLikedDates();
+    const timer = window.setInterval(() => { void syncLikedDates(); }, 60 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [isLikedPlaylist]);
+
+  useEffect(() => {
+    if (!isLikedPlaylist || isLoading || isCheckingLikes || likedDates.busy || !likedDates.connected) return;
+    void lookupMissingLikedDates(tracks.map((track) => track.id));
+  }, [isLikedPlaylist, isLoading, isCheckingLikes, tracks, likedDates.busy, likedDates.connected, likedDates.syncedAt]);
 
   useEffect(() => {
     if (!playlist) return;
@@ -126,8 +156,10 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
     setSort("dateAdded");
     setSortDirection("desc");
     setPlaylistSearchQuery("");
+    setDateFilter({ period: "all", from: "", to: "" });
     setTracks([]);
     setIsLoading(true);
+    setIsCheckingLikes(isLikedPlaylist);
     setIsLoadingMore(false);
     setHasMoreTracks(false);
     setNextPageKey(undefined);
@@ -152,9 +184,10 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
       })
       .catch(() => {
         if (active && !showedPage) setError("Unable to load this playlist.");
+        if (active && showedPage) setLoadMoreError("Could not refresh all songs. Showing the previous saved list; use Check now to retry.");
       })
       .finally(() => {
-        if (active) setIsLoading(false);
+        if (active) { setIsLoading(false); setIsCheckingLikes(false); }
       });
     return () => {
       active = false;
@@ -225,7 +258,7 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
 
   const sortedTracks = useMemo(() => {
     if (sort === "dateAdded") {
-      return sortDirection === "desc" ? tracks : [...tracks].reverse();
+      return playlistDateOrder(tracks, sortDirection);
     }
     const sorted = [...tracks].sort((left, right) => {
       if (sort === "name") {
@@ -245,14 +278,21 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
 
   const visibleTracks = useMemo(() => {
     const query = playlistSearchQuery.trim().toLocaleLowerCase();
-    if (!query) return sortedTracks;
-    return sortedTracks.filter((track) => [
+    return sortedTracks.filter((track) => (!isLikedPlaylist || matchesLikedDate(likedDates.dates[track.id], dateFilter, undefined, estimates[track.id])) && (!query || [
       track.title,
       track.artist,
       track.album,
       ...(track.artists?.map((artist) => artist.name) ?? []),
-    ].some((value) => value?.toLocaleLowerCase().includes(query)));
-  }, [playlistSearchQuery, sortedTracks]);
+    ].some((value) => value?.toLocaleLowerCase().includes(query))));
+  }, [playlistSearchQuery, sortedTracks, isLikedPlaylist, likedDates.dates, dateFilter, estimates]);
+
+  const virtualized = !isLocalPlaylistView && visibleTracks.length > 100;
+  const showTimeline = isLikedPlaylist && sort === "dateAdded" && visibleTracks.length > 0;
+  const timeline = useMemo(() => buildLikedTimeline(visibleTracks, likedDates.dates, estimates),
+    [visibleTracks, likedDates.dates, estimates]);
+  const windowed = usePlaylistWindow(visibleTracks.length, virtualized,
+    `${playlist?.id}:${sort}:${sortDirection}:${playlistSearchQuery}:${dateFilter.period}:${dateFilter.from}:${dateFilter.to}`, showTimeline);
+  const renderedTracks = visibleTracks.slice(windowed.start, windowed.end);
 
   const enteringTrackDelayIndexes = useMemo(() => {
     const delayIndexes = new Map<string, number>();
@@ -363,7 +403,7 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
   };
 
   const playShuffled = async () => {
-    const shuffledTracks = shuffleTracks(tracks);
+    const shuffledTracks = shuffleTracks(visibleTracks);
     const firstTrack = shuffledTracks[0];
     if (!firstTrack) return;
 
@@ -433,7 +473,7 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
   };
 
   return (
-    <div className={styles.root}>
+    <div className={`${styles.root} ${showTimeline ? styles.timelineRoot : ""}`}>
       <header
         className={`${styles.header} ${playlistStyles.header}`}
         onContextMenu={(event) => openPlaylistMenu(event, playlist)}
@@ -476,7 +516,7 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
           <button
             className={styles.shuffleButton}
             type="button"
-            disabled={isLoading || Boolean(error) || tracks.length === 0}
+            disabled={isLoading || Boolean(error) || visibleTracks.length === 0}
             onClick={() => void playShuffled()}
           >
             <IconArrowsShuffle size={18} aria-hidden="true" />
@@ -484,8 +524,40 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
           </button>
         </div>
       </header>
+      {isLikedPlaylist && <LikedSongTools
+        filter={dateFilter}
+        onFilterChange={setDateFilter}
+        datesConnected={likedDates.connected}
+        unknownCount={tracks.length - knownDateCount - estimatedCount}
+        visibleCount={visibleTracks.length}
+        totalCount={tracks.length}
+        refreshing={isLoading || isCheckingLikes}
+        onRefresh={async () => {
+          const id = playlist.id;
+          setIsCheckingLikes(true);
+          try {
+            const page = await libraryController.getPlaylistTrackPage(playlist);
+            if (playlistIdRef.current !== id) return;
+            setTracks(page.tracks);
+            setHasMoreTracks(page.hasMore);
+            setNextPageKey(page.nextPageKey);
+            setError(null);
+            setLoadMoreError(null);
+          } finally {
+            setIsCheckingLikes(false);
+          }
+        }}
+      />}
       {isLoading && <PlaylistLoadingSpinner label="Loading songs" />}
       {error && <p className={styles.message}>{error}</p>}
+      {isLikedPlaylist && likedDates.connected && tracks.length > 0 && <p className={styles.message} role="status">
+        {likedDates.lookupProgress
+          ? `${likedDates.lookupProgress.kind === "publications" ? "Loading publication dates for estimates" : "Checking additional dates"}: ${likedDates.lookupProgress.checked} of ${likedDates.lookupProgress.total} songs in this batch. `
+          : likedDates.busy ? "Refreshing saved dates… " : ""}
+        Exact dates for {knownDateCount} of {tracks.length} songs; estimated dates for {estimatedCount}.
+        {" "}{tracks.length - knownDateCount - estimatedCount} remain unknown. Estimates use playlist order and available publication dates.
+        {likedDates.error && ` ${likedDates.error}`}
+      </p>}
       {!isLoading && !error && !hasMoreTracks && tracks.length === 0 && (
         <div className={playlistStyles.empty}>
           <p>Your playlist starts here</p>
@@ -565,11 +637,19 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
               )}
             </div>
           </div>
-          {visibleTracks.length === 0 && playlistSearchQuery.trim() ? (
-            <p className={styles.message}>No songs match this search.</p>
+          {isLikedPlaylist && !likedDates.connected && (
+            <p className={styles.message}>Connect liked song dates in Settings → About to show historical added dates.</p>
+          )}
+          {visibleTracks.length === 0 && (playlistSearchQuery.trim() || (isLikedPlaylist && dateFilter.period !== "all")) ? (
+            <p className={styles.message}>No songs match these filters.</p>
           ) : (
-          <div className={styles.trackList}>
-            {visibleTracks.map((track, index) => {
+          <div className={showTimeline ? styles.listWithTimeline : undefined}>
+          <div ref={windowed.listRef} className={styles.trackList}>
+            {windowed.before > 0 && <div aria-hidden="true" style={{ height: windowed.before, flexShrink: 0 }} />}
+            {renderedTracks.map((track, renderedIndex) => {
+              const index = windowed.start + renderedIndex;
+              const estimate = estimates[track.id];
+              const addedDate = estimate ? formatLikedEstimate(estimate) : formatLikedDate(likedDates.dates[track.id]);
               const trackKey = getTrackKey(track);
               const trackPath = track.localPath ?? track.id;
               const isDragged = pointerDragRef.current?.localPath === trackPath && pointerDragRef.current.isDragging;
@@ -583,8 +663,8 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
                 <button
                   key={getTrackRenderKey(track, index)}
                   data-playlist-track-path={trackPath}
-                  className={`${styles.track} ${playlistStyles.trackWithArtwork} ${
-                    enteringTrackDelayIndexes.has(trackKey) ? styles.trackEntering : ""
+                  className={`${styles.track} ${isLikedPlaylist ? styles.trackWithDate : playlistStyles.trackWithArtwork} ${
+                    !virtualized && enteringTrackDelayIndexes.has(trackKey) ? styles.trackEntering : ""
                   }`}
                   style={{
                     "--track-enter-delay": `${Math.min(
@@ -593,6 +673,8 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
                     ) * 28}ms`,
                     opacity: isDragged ? 0.4 : undefined,
                     position: "relative" as const,
+                    height: virtualized || showTimeline ? 58 : undefined,
+                    flexShrink: 0,
                   } as CSSProperties}
                   onContextMenu={(event) => openTrackMenu(event, track, {
                     playlist,
@@ -634,7 +716,8 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
                     />
                   )}
                   <span className={styles.trackIndex}>{index + 1}</span>
-                  <TrackArtwork className={playlistStyles.trackArtwork} artworkUrl={track.artworkUrl}
+                  <TrackArtwork className={isLikedPlaylist ? styles.trackArtwork : playlistStyles.trackArtwork}
+                    artworkUrl={track.artworkUrl} iconSize={20}
                     videoId={track.source === "youtube" ? track.id : undefined} />
                   <span className={styles.trackText}>
                     <span className={styles.trackTitle}>{track.title}</span>
@@ -644,11 +727,20 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
                       fallback={track.artist}
                     />
                   </span>
+                  {isLikedPlaylist && (
+                    <span className={styles.trackAddedDate} title={addedDate.title} aria-label={addedDate.title}>
+                      <span className={styles.trackAddedLabel}>{estimate ? "Estimated" : "Added"}</span>
+                      {addedDate.label}
+                    </span>
+                  )}
                   <DownloaderStatusBadge track={track} />
-                  <IconPlayerPlay size={18} />
+                  <IconPlayerPlay className={styles.trackPlayIcon} size={18} />
                 </button>
               );
             })}
+            {windowed.after > 0 && <div aria-hidden="true" style={{ height: windowed.after, flexShrink: 0 }} />}
+          </div>
+          {showTimeline && <LikedTimeline years={timeline.years} active={timeline.positions[windowed.activeIndex]} onJump={windowed.jumpToIndex} viewportHeight={windowed.viewportHeight} />}
           </div>
           )}
           <div ref={loadMoreRef} className={styles.loadMoreStatus} aria-live="polite">

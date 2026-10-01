@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cache-set-max-bytes"
+description = "Enables the cache_set_max_bytes command without any pre-configured scope."
+commands.allow = ["cache_set_max_bytes"]
+
+[[permission]]
+identifier = "deny-cache-set-max-bytes"
+description = "Denies the cache_set_max_bytes command without any pre-configured scope."
+commands.deny = ["cache_set_max_bytes"]

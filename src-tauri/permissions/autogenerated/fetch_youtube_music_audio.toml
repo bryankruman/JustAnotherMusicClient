@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fetch-youtube-music-audio"
+description = "Enables the fetch_youtube_music_audio command without any pre-configured scope."
+commands.allow = ["fetch_youtube_music_audio"]
+
+[[permission]]
+identifier = "deny-fetch-youtube-music-audio"
+description = "Denies the fetch_youtube_music_audio command without any pre-configured scope."
+commands.deny = ["fetch_youtube_music_audio"]

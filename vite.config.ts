@@ -15,6 +15,7 @@ export default defineConfig(async () => ({
       input: {
         main: resolveEntry("./index.html"),
         mini: resolveEntry("./mini.html"),
+        isolatedPlayerShell: resolveEntry("./isolated-player-shell.html"),
       },
     },
   },

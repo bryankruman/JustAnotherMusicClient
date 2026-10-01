@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-proxy-http-request"
+description = "Enables the proxy_http_request command without any pre-configured scope."
+commands.allow = ["proxy_http_request"]
+
+[[permission]]
+identifier = "deny-proxy-http-request"
+description = "Denies the proxy_http_request command without any pre-configured scope."
+commands.deny = ["proxy_http_request"]

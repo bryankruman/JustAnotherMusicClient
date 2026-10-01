@@ -3,16 +3,22 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 #[cfg(not(debug_assertions))]
 use portpicker::pick_unused_port;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_dialog::{DialogExt as _, MessageDialogButtons};
+#[cfg(not(debug_assertions))]
+use tiny_http::{
+    Header as HttpHeader, Method as HttpMethod, Response as HttpResponse, Server as HttpServer,
+};
 
 macro_rules! eprintln {
     ($($arg:tt)*) => {{
@@ -48,6 +54,8 @@ mod windows_media;
 
 mod discord_rpc;
 mod lastfm;
+mod liked_dates;
+mod session_import;
 
 // Keep the legacy service name so existing sign-in credentials survive the product rename.
 const KEYRING_SERVICE: &str = "com.ytmusicdock.app";
@@ -65,10 +73,16 @@ const YOUTUBE_MUSIC_PLAYER_API_URL: &str = "https://music.youtube.com/youtubei/v
 const MACOS_LOGIN_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15";
 const YOUTUBE_COOKIE_CHUNK_SIZE: usize = 900;
 const YOUTUBE_COOKIE_MAX_CHUNKS: usize = 16;
+const BACKEND_AUTH_MARKER: &str = "SAPISID=backend-managed";
 const YOUTUBE_COOKIE_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 const YOUTUBE_SLOW_PERSIST_COOKIES: [&str; 3] = ["SIDCC", "__Secure-1PSIDCC", "__Secure-3PSIDCC"];
 const DEFAULT_CACHE_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const LOCAL_AUDIO_MAX_BYTES: u64 = 512 * 1024 * 1024;
+const LOCAL_AUDIO_SCAN_MAX_ENTRIES: usize = 20_000;
+const PROXY_REQUEST_MAX_BYTES: usize = 8 * 1024 * 1024;
+const PROXY_RESPONSE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const CURRENT_LOG_FILE_NAME: &str = "current.log";
+const RETAINED_LOG_SESSIONS: usize = 3;
 const CUSTOM_THEME_CSS_FILE_NAME: &str = "custom-theme.css";
 const CUSTOM_THEME_CSS_MAX_BYTES: u64 = 100 * 1024;
 const MINIMIZE_TO_TRAY_KEY: &str = "minimize-to-system-tray-enabled";
@@ -153,6 +167,42 @@ fn is_google_media_cookie_host(url: &url::Url) -> bool {
             || host == "youtube.com"
             || host.ends_with(".youtube.com")
     })
+}
+
+fn host_matches(host: &str, domain: &str) -> bool {
+    host == domain || host.ends_with(&format!(".{domain}"))
+}
+
+fn allowed_proxy_url(url: &url::Url) -> bool {
+    if url.scheme() != "https" || url.username() != "" || url.password().is_some() {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if url.port_or_known_default() != Some(443) {
+        return false;
+    }
+    ["youtube.com", "googlevideo.com", "ytimg.com", "ggpht.com"]
+        .iter()
+        .any(|domain| host_matches(host, domain))
+        || [
+            "lrclib.net",
+            "lyrics-api.boidu.dev",
+            "cp.cloudflare.com",
+            "youtubei.googleapis.com",
+        ]
+        .contains(&host)
+}
+
+fn allowed_audio_url(url: &url::Url) -> bool {
+    url.scheme() == "https"
+        && url.username() == ""
+        && url.password().is_none()
+        && url.port_or_known_default() == Some(443)
+        && url.host_str().is_some_and(|host| {
+            host_matches(host, "youtube.com") || host_matches(host, "googlevideo.com")
+        })
 }
 
 fn is_slow_persist_cookie(set_cookie: &str) -> bool {
@@ -482,18 +532,38 @@ fn local_audio_title(path: &Path) -> String {
         .to_string()
 }
 
-fn scan_local_audio_path(path: &Path, files: &mut Vec<LocalAudioFile>) -> Result<(), CommandError> {
-    let metadata = match fs::metadata(path) {
+fn scan_local_audio_path(
+    path: &Path,
+    root: &Path,
+    visited: &mut HashSet<PathBuf>,
+    files: &mut Vec<LocalAudioFile>,
+) -> Result<(), CommandError> {
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Ok(());
+    }
+    let approved = match fs::canonicalize(path) {
+        Ok(approved) if approved.starts_with(root) => approved,
+        _ => return Ok(()),
+    };
+    if !visited.insert(approved.clone()) {
+        return Ok(());
+    }
+    if visited.len() > LOCAL_AUDIO_SCAN_MAX_ENTRIES {
+        return Err(cache_error(
+            "music folder scan exceeds the 20,000 entry limit",
+        ));
+    }
+    let metadata = match fs::metadata(&approved) {
         Ok(metadata) => metadata,
         Err(_) => return Ok(()),
     };
 
     if metadata.is_file() {
-        if is_local_audio_file(path) {
+        if is_local_audio_file(&approved) && metadata.len() <= LOCAL_AUDIO_MAX_BYTES {
             files.push(LocalAudioFile {
-                path: path.to_string_lossy().to_string(),
-                title: local_audio_title(path),
-                album: path
+                path: approved.to_string_lossy().to_string(),
+                title: local_audio_title(&approved),
+                album: approved
                     .parent()
                     .and_then(|parent| parent.file_name())
                     .and_then(|name| name.to_str())
@@ -508,12 +578,12 @@ fn scan_local_audio_path(path: &Path, files: &mut Vec<LocalAudioFile>) -> Result
         return Ok(());
     }
 
-    let entries = fs::read_dir(path).map_err(|error| CommandError {
+    let entries = fs::read_dir(&approved).map_err(|error| CommandError {
         message: format!("local audio directory read failed: {error}"),
     })?;
 
     for entry in entries.flatten() {
-        scan_local_audio_path(&entry.path(), files)?;
+        scan_local_audio_path(&entry.path(), root, visited, files)?;
     }
 
     Ok(())
@@ -522,12 +592,16 @@ fn scan_local_audio_path(path: &Path, files: &mut Vec<LocalAudioFile>) -> Result
 #[tauri::command]
 fn local_audio_scan(paths: Vec<String>) -> Result<Vec<LocalAudioFile>, CommandError> {
     let mut files = Vec::new();
+    let root = fs::canonicalize(default_music_dir()?)
+        .map_err(|error| cache_error(format!("Music directory unavailable: {error}")))?;
+    let mut visited = HashSet::new();
     for path in paths {
         let trimmed_path = path.trim();
         if trimmed_path.is_empty() {
             continue;
         }
-        scan_local_audio_path(Path::new(trimmed_path), &mut files)?;
+        let approved_path = approved_music_path(Path::new(trimmed_path))?;
+        scan_local_audio_path(&approved_path, &root, &mut visited, &mut files)?;
     }
     files.sort_by(|left, right| left.path.to_lowercase().cmp(&right.path.to_lowercase()));
     files.dedup_by(|left, right| left.path == right.path);
@@ -536,11 +610,18 @@ fn local_audio_scan(paths: Vec<String>) -> Result<Vec<LocalAudioFile>, CommandEr
 
 #[tauri::command]
 fn local_audio_read(path: String) -> Result<AudioPayload, CommandError> {
-    let path = PathBuf::from(path);
+    let path = approved_music_path(Path::new(&path))?;
     if !path.is_file() || !is_local_audio_file(&path) {
         return Err(CommandError {
             message: "local audio file is unavailable.".to_string(),
         });
+    }
+    if fs::metadata(&path)
+        .map_err(|error| cache_error(format!("local audio metadata failed: {error}")))?
+        .len()
+        > LOCAL_AUDIO_MAX_BYTES
+    {
+        return Err(cache_error("local audio file exceeds the 512 MB limit"));
     }
     let bytes = fs::read(&path).map_err(|error| CommandError {
         message: format!("local audio read failed: {error}"),
@@ -712,8 +793,19 @@ fn system_username_get() -> String {
 }
 
 #[tauri::command]
-fn custom_theme_css_import(app: tauri::AppHandle, path: String) -> Result<(), CommandError> {
-    let source_path = PathBuf::from(path);
+async fn custom_theme_css_import(app: tauri::AppHandle) -> Result<bool, CommandError> {
+    let Some(selected) = app
+        .dialog()
+        .file()
+        .add_filter("CSS", &["css"])
+        .set_title("Choose custom CSS theme")
+        .blocking_pick_file()
+    else {
+        return Ok(false);
+    };
+    let source_path = selected
+        .into_path()
+        .map_err(|error| cache_error(format!("custom CSS path unavailable: {error}")))?;
     validate_custom_theme_css_path(&source_path)?;
 
     let css = fs::read_to_string(&source_path).map_err(|error| CommandError {
@@ -730,7 +822,8 @@ fn custom_theme_css_import(app: tauri::AppHandle, path: String) -> Result<(), Co
 
     fs::write(target_path, css).map_err(|error| CommandError {
         message: format!("custom theme CSS write failed: {error}"),
-    })
+    })?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -852,6 +945,46 @@ fn current_log_path(app: &tauri::AppHandle) -> Result<PathBuf, CommandError> {
         })
 }
 
+fn previous_log_path(log_dir: &Path, index: usize) -> PathBuf {
+    log_dir.join(format!("previous-{index}.log"))
+}
+
+fn regular_log_file_exists(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "log path is not a regular file",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn rotate_app_logs(log_dir: &Path, log_path: &Path) -> io::Result<bool> {
+    if !regular_log_file_exists(log_path)? || fs::metadata(log_path)?.len() == 0 {
+        return Ok(false);
+    }
+
+    // Check every managed path before pruning the oldest session. A symlink or
+    // unexpected entry must not cause a partially completed rotation.
+    for index in 1..=RETAINED_LOG_SESSIONS {
+        regular_log_file_exists(&previous_log_path(log_dir, index))?;
+    }
+    let oldest = previous_log_path(log_dir, RETAINED_LOG_SESSIONS);
+    if regular_log_file_exists(&oldest)? {
+        fs::remove_file(&oldest)?;
+    }
+    for index in (2..=RETAINED_LOG_SESSIONS).rev() {
+        let source = previous_log_path(log_dir, index - 1);
+        if regular_log_file_exists(&source)? {
+            fs::rename(source, previous_log_path(log_dir, index))?;
+        }
+    }
+    fs::copy(log_path, previous_log_path(log_dir, 1))?;
+    Ok(true)
+}
+
 fn initialize_app_log(app: &tauri::AppHandle) -> Result<(), CommandError> {
     let log_path = current_log_path(app)?;
     let log_dir = log_path.parent().ok_or_else(|| CommandError {
@@ -862,23 +995,22 @@ fn initialize_app_log(app: &tauri::AppHandle) -> Result<(), CommandError> {
         message: format!("log directory creation failed: {error}"),
     })?;
 
-    if let Ok(entries) = fs::read_dir(log_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path != log_path
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("log"))
-            {
-                let _ = fs::remove_file(path);
-            }
-        }
+    let rotation = rotate_app_logs(log_dir, &log_path);
+    if rotation
+        .as_ref()
+        .is_err_and(|error| error.kind() == io::ErrorKind::InvalidData)
+    {
+        return Err(CommandError {
+            message: "log path is not a regular file".to_string(),
+        });
     }
+    let append_existing = rotation.is_err();
 
     let file = OpenOptions::new()
         .create(true)
         .write(true)
-        .truncate(true)
+        .append(append_existing)
+        .truncate(!append_existing)
         .open(&log_path)
         .map_err(|error| CommandError {
             message: format!("log file creation failed: {error}"),
@@ -893,6 +1025,11 @@ fn initialize_app_log(app: &tauri::AppHandle) -> Result<(), CommandError> {
         "[internal][tauri][info] log initialized path={}",
         log_path.display()
     ));
+    if let Err(error) = rotation {
+        append_log_line(format_args!(
+            "[internal][tauri][warn] log rotation failed; appended to current log: {error}"
+        ));
+    }
     Ok(())
 }
 
@@ -966,13 +1103,15 @@ fn sanitize_log_url(value: &str) -> String {
 }
 
 #[tauri::command]
-fn open_current_log(app: tauri::AppHandle) -> Result<(), CommandError> {
-    let log_path = current_log_path(&app)?;
-    if !log_path.exists() {
-        initialize_app_log(&app)?;
-    }
-    tauri_plugin_opener::open_path(&log_path, None::<&str>).map_err(|error| CommandError {
-        message: format!("unable to open log file: {error}"),
+fn open_log_folder(app: tauri::AppHandle) -> Result<(), CommandError> {
+    let log_dir = app.path().app_log_dir().map_err(|error| CommandError {
+        message: format!("log directory unavailable: {error}"),
+    })?;
+    fs::create_dir_all(&log_dir).map_err(|error| CommandError {
+        message: format!("log directory creation failed: {error}"),
+    })?;
+    tauri_plugin_opener::open_path(&log_dir, None::<&str>).map_err(|error| CommandError {
+        message: format!("unable to open log folder: {error}"),
     })
 }
 
@@ -1186,6 +1325,37 @@ fn quit_app(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
+async fn autostart_set_confirmed(app: tauri::AppHandle, enabled: bool) -> Result<(), CommandError> {
+    let manager = app.autolaunch();
+    let currently_enabled = manager
+        .is_enabled()
+        .map_err(|error| cache_error(format!("startup setting check failed: {error}")))?;
+    if currently_enabled == enabled {
+        return Ok(());
+    }
+    let message = if enabled {
+        "Allow Just Another Music Client to start automatically when you sign in?"
+    } else {
+        "Stop Just Another Music Client from starting automatically when you sign in?"
+    };
+    let confirmed = app
+        .dialog()
+        .message(message)
+        .title("Change startup setting")
+        .buttons(MessageDialogButtons::YesNo)
+        .blocking_show();
+    if !confirmed {
+        return Err(cache_error("startup setting change cancelled"));
+    }
+    let result = if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    };
+    result.map_err(|error| cache_error(format!("startup setting change failed: {error}")))
+}
+
+#[tauri::command]
 fn frontend_log(level: String, context: String, payload: String) {
     eprintln!("[internal][frontend][{}] {} {}", level, context, payload);
 }
@@ -1352,26 +1522,6 @@ fn delete_youtube_music_cookie_entries() -> Result<(), CommandError> {
 }
 
 #[tauri::command]
-fn save_youtube_credentials(credentials_json: String) -> Result<(), CommandError> {
-    youtube_keyring_entry()?
-        .set_password(&credentials_json)
-        .map_err(|error| CommandError {
-            message: format!("credential save failed: {error}"),
-        })
-}
-
-#[tauri::command]
-fn load_youtube_credentials() -> Result<Option<String>, CommandError> {
-    match youtube_keyring_entry()?.get_password() {
-        Ok(credentials) => Ok(Some(credentials)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(CommandError {
-            message: format!("credential load failed: {error}"),
-        }),
-    }
-}
-
-#[tauri::command]
 fn delete_youtube_credentials() -> Result<(), CommandError> {
     match youtube_keyring_entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -1467,10 +1617,10 @@ fn load_encrypted_youtube_music_cookie(
 }
 
 #[tauri::command]
-fn load_youtube_music_cookie(
+fn youtube_music_session_status(
     app: tauri::AppHandle,
     jar: tauri::State<'_, YoutubeCookieJar>,
-) -> Result<Option<String>, CommandError> {
+) -> Result<bool, CommandError> {
     #[cfg(target_os = "macos")]
     let cookie = {
         if let Some(cookie) = load_encrypted_youtube_music_cookie(&app)? {
@@ -1494,7 +1644,7 @@ fn load_youtube_music_cookie(
         state.cookie = cookie.clone();
         state.persisted_at = None;
     }
-    Ok(cookie)
+    Ok(cookie.is_some())
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -1514,7 +1664,7 @@ fn cookie_domain_matches(host: &str, cookie_domain: Option<&str>) -> bool {
 async fn sign_in_youtube_music(
     app: tauri::AppHandle,
     jar: tauri::State<'_, YoutubeCookieJar>,
-) -> Result<String, CommandError> {
+) -> Result<bool, CommandError> {
     eprintln!("[internal][tauri][info] sign_in_youtube_music start");
     if let Some(existing) = app.get_webview_window(YOUTUBE_LOGIN_WINDOW) {
         eprintln!("[internal][tauri][info] sign_in_youtube_music closing existing login window");
@@ -1612,7 +1762,14 @@ async fn sign_in_youtube_music(
         let signed_in = has_auth_cookie && on_music_page;
         let current_url = window
             .url()
-            .map(|url| url.to_string())
+            .map(|url| {
+                format!(
+                    "{}://{}{}",
+                    url.scheme(),
+                    url.host_str().unwrap_or("unknown"),
+                    url.path()
+                )
+            })
             .unwrap_or_else(|error| format!("[url unavailable: {error}]"));
         let cookie_metadata = cookies
             .iter()
@@ -1658,7 +1815,7 @@ async fn sign_in_youtube_music(
             eprintln!("[internal][tauri][info] sign_in_youtube_music credential saved");
             let _ = window.close();
             eprintln!("[internal][tauri][info] sign_in_youtube_music login window close requested");
-            return Ok(cookie_header);
+            return Ok(true);
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -1731,8 +1888,6 @@ struct ProxyHttpResponse {
     status: u16,
     headers: HashMap<String, String>,
     body_base64: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cookie: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1944,7 +2099,7 @@ fn build_audio_http_client(
     request_url: &url::Url,
     force_signed_ip_family: bool,
 ) -> Result<reqwest::Client, CommandError> {
-    let mut client_builder = reqwest::Client::builder();
+    let mut client_builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
     if force_signed_ip_family {
         if let Some(local_address) = signed_googlevideo_local_address(request_url) {
             eprintln!(
@@ -2023,7 +2178,7 @@ async fn send_audio_bytes_request(
         }
     }
 
-    let response = request.send().await.map_err(|error| {
+    let mut response = request.send().await.map_err(|error| {
         eprintln!(
             "[internal][tauri][error] fetch_audio_bytes request failed url={} track_id={} client={} profile={} error={}",
             url, track_id, client_name, profile_name, error
@@ -2050,17 +2205,26 @@ async fn send_audio_bytes_request(
         });
     }
 
-    let body = response.bytes().await.map_err(|error| {
-        eprintln!(
-            "[internal][tauri][error] fetch_audio_bytes body read failed url={} track_id={} client={} profile={} error={}",
-            url, track_id, client_name, profile_name, error
-        );
-        CommandError {
-            message: format!("read body failed: {error}"),
-        }
-    })?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > LOCAL_AUDIO_MAX_BYTES)
+    {
+        return Err(cache_error("audio response exceeds the 512 MB limit"));
+    }
 
-    Ok(body.to_vec())
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| cache_error(format!("audio body read failed: {error}")))?
+    {
+        if body.len().saturating_add(chunk.len()) as u64 > LOCAL_AUDIO_MAX_BYTES {
+            return Err(cache_error("audio response exceeds the 512 MB limit"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
 }
 
 async fn fetch_audio_bytes_inner(
@@ -2078,6 +2242,11 @@ async fn fetch_audio_bytes_inner(
     let request_url = url::Url::parse(url).map_err(|error| CommandError {
         message: format!("audio URL parse failed: {error}"),
     })?;
+    if !allowed_audio_url(&request_url) {
+        return Err(cache_error(
+            "audio URL must be HTTPS on a YouTube or Google media host",
+        ));
+    }
     let watch_referer = format!("https://www.youtube.com/watch?v={track_id}");
     let music_profile = Some(("https://music.youtube.com/", "https://music.youtube.com"));
     let request_profiles: Vec<(&str, Option<(&str, &str)>)> = vec![
@@ -2094,6 +2263,9 @@ async fn fetch_audio_bytes_inner(
         vec![("default-ip-family", false)]
     };
     let total_bytes = signed_content_length(&request_url).unwrap_or(0);
+    if total_bytes > LOCAL_AUDIO_MAX_BYTES {
+        return Err(cache_error("audio response exceeds the 512 MB limit"));
+    }
     let chunk_size = audio_chunk_size(total_bytes);
     let use_range_query = total_bytes > chunk_size;
     let mut failures = Vec::new();
@@ -2211,8 +2383,14 @@ async fn fetch_audio_bytes_inner(
 async fn fetch_audio_bytes(
     url: String,
     track_id: String,
-    cookie: Option<String>,
+    jar: tauri::State<'_, YoutubeCookieJar>,
 ) -> Result<Vec<u8>, CommandError> {
+    let cookie = jar
+        .0
+        .lock()
+        .map_err(|_| cache_error("YouTube session lock unavailable"))?
+        .cookie
+        .clone();
     fetch_audio_bytes_inner(&url, &track_id, cookie.as_deref(), None, |_, _| {}).await
 }
 
@@ -2221,8 +2399,14 @@ async fn fetch_audio_source(
     url: String,
     track_id: String,
     mime_type: String,
-    cookie: Option<String>,
+    jar: tauri::State<'_, YoutubeCookieJar>,
 ) -> Result<AudioSourcePayload, CommandError> {
+    let cookie = jar
+        .0
+        .lock()
+        .map_err(|_| cache_error("YouTube session lock unavailable"))?
+        .cookie
+        .clone();
     let bytes =
         fetch_audio_bytes_inner(&url, &track_id, cookie.as_deref(), None, |_, _| {}).await?;
     if mime_type.contains("mp4") && bytes.len() >= 12 && &bytes[4..8] != b"ftyp" {
@@ -2328,26 +2512,85 @@ fn validate_download_track_id(track_id: &str) -> Result<(), CommandError> {
     Ok(())
 }
 
-fn default_music_dir() -> PathBuf {
+fn default_music_dir() -> Result<PathBuf, CommandError> {
     #[cfg(target_os = "windows")]
     {
         if let Some(profile) = std::env::var_os("USERPROFILE") {
-            return PathBuf::from(profile).join("Music");
+            return Ok(PathBuf::from(profile).join("Music"));
         }
     }
 
     if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home).join("Music");
+        return Ok(PathBuf::from(home).join("Music"));
     }
 
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    Err(cache_error("system Music directory unavailable"))
+}
+
+fn approved_music_path(path: &Path) -> Result<PathBuf, CommandError> {
+    let root = fs::canonicalize(default_music_dir()?)
+        .map_err(|error| cache_error(format!("Music directory unavailable: {error}")))?;
+    let approved = fs::canonicalize(path)
+        .map_err(|error| cache_error(format!("music path unavailable: {error}")))?;
+    if !approved.starts_with(&root) {
+        return Err(cache_error(
+            "music files must be inside the system Music directory",
+        ));
+    }
+    Ok(approved)
+}
+
+#[tauri::command]
+fn local_music_folder_validate(path: String) -> Result<String, CommandError> {
+    let approved = approved_music_path(Path::new(&path))?;
+    if !approved.is_dir() {
+        return Err(cache_error(
+            "choose a directory inside the system Music directory",
+        ));
+    }
+    Ok(approved.to_string_lossy().to_string())
+}
+
+fn approved_download_folder(folder: &Path) -> Result<PathBuf, CommandError> {
+    let music_root = fs::canonicalize(default_music_dir()?)
+        .map_err(|error| cache_error(format!("Music directory unavailable: {error}")))?;
+    let root = music_root.join("Just Another Music Client");
+    fs::create_dir_all(&root)
+        .map_err(|error| cache_error(format!("download directory unavailable: {error}")))?;
+    let root = fs::canonicalize(root)
+        .map_err(|error| cache_error(format!("download directory unavailable: {error}")))?;
+    if !root.starts_with(&music_root) {
+        return Err(cache_error("download directory must be inside Music"));
+    }
+    let folder = fs::canonicalize(folder)
+        .map_err(|error| cache_error(format!("download folder unavailable: {error}")))?;
+    if !folder.starts_with(&root) {
+        return Err(cache_error(
+            "download folders must be inside Music/Just Another Music Client",
+        ));
+    }
+    Ok(folder)
+}
+
+#[tauri::command]
+fn download_folder_validate(folder: String) -> Result<String, CommandError> {
+    let approved = approved_download_folder(Path::new(&folder))?;
+    if !approved.is_dir() {
+        return Err(cache_error(
+            "choose a directory inside Music/Just Another Music Client",
+        ));
+    }
+    Ok(approved.to_string_lossy().to_string())
 }
 
 #[tauri::command]
 fn download_default_folder() -> Result<String, CommandError> {
-    Ok(default_music_dir()
+    let folder = default_music_dir()?
         .join("Just Another Music Client")
-        .join("Downloads")
+        .join("Downloads");
+    fs::create_dir_all(&folder)
+        .map_err(|error| cache_error(format!("download directory unavailable: {error}")))?;
+    Ok(approved_download_folder(&folder)?
         .to_string_lossy()
         .to_string())
 }
@@ -2360,7 +2603,7 @@ fn download_file_path(
     mime_type: &str,
 ) -> Result<PathBuf, CommandError> {
     validate_download_track_id(track_id)?;
-    let folder = PathBuf::from(folder);
+    let folder = approved_download_folder(Path::new(folder))?;
     let extension = download_extension_for_mime(mime_type);
     let artist = sanitize_download_filename_part(artist);
     let title = sanitize_download_filename_part(title);
@@ -2376,8 +2619,14 @@ async fn download_audio_save(
     artist: String,
     folder: String,
     mime_type: String,
-    cookie: Option<String>,
+    jar: tauri::State<'_, YoutubeCookieJar>,
 ) -> Result<DownloadAudioSaveResult, CommandError> {
+    let cookie = jar
+        .0
+        .lock()
+        .map_err(|_| cache_error("YouTube session lock unavailable"))?
+        .cookie
+        .clone();
     validate_download_track_id(&track_id)?;
     let cancel_flag = Arc::new(AtomicBool::new(false));
     {
@@ -2444,9 +2693,17 @@ async fn download_audio_save(
         return Err(cache_error("download cancelled"));
     }
 
-    fs::write(&part_path, &bytes).map_err(|error| CommandError {
-        message: format!("download write failed: {error}"),
-    })?;
+    let mut part_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&part_path)
+        .map_err(|error| {
+            cache_error(format!("download temporary file creation failed: {error}"))
+        })?;
+    part_file
+        .write_all(&bytes)
+        .map_err(|error| cache_error(format!("download write failed: {error}")))?;
+    drop(part_file);
     if target_path.exists() {
         fs::remove_file(&target_path).map_err(|error| CommandError {
             message: format!("download replace failed: {error}"),
@@ -2490,7 +2747,11 @@ fn download_audio_cancel(track_id: String) -> Result<(), CommandError> {
 
 #[tauri::command]
 fn download_audio_file_exists(file_path: String) -> Result<bool, CommandError> {
-    Ok(PathBuf::from(file_path).is_file())
+    let path = PathBuf::from(file_path);
+    if !path.is_file() {
+        return Ok(false);
+    }
+    Ok(approved_download_folder(&path)?.is_file())
 }
 
 #[tauri::command]
@@ -2500,9 +2761,18 @@ fn download_audio_source(
     mime_type: String,
 ) -> Result<AudioSourcePayload, CommandError> {
     validate_download_track_id(&track_id)?;
-    let path = PathBuf::from(file_path);
-    if !path.is_file() {
+    let path = approved_download_folder(Path::new(&file_path))?;
+    if !path.is_file() || !is_local_audio_file(&path) {
         return Err(cache_error("downloaded audio file is unavailable"));
+    }
+    if fs::metadata(&path)
+        .map_err(|error| cache_error(format!("downloaded audio metadata failed: {error}")))?
+        .len()
+        > LOCAL_AUDIO_MAX_BYTES
+    {
+        return Err(cache_error(
+            "downloaded audio file exceeds the 512 MB limit",
+        ));
     }
     let bytes = fs::read(&path).map_err(|error| CommandError {
         message: format!("downloaded audio read failed: {error}"),
@@ -2547,6 +2817,7 @@ fn download_audio_list(folder: String) -> Result<Vec<DownloadDiscoveredFile>, Co
     if !folder.exists() {
         return Ok(Vec::new());
     }
+    let folder = approved_download_folder(&folder)?;
     let mut files = Vec::new();
     let entries = fs::read_dir(&folder).map_err(|error| CommandError {
         message: format!("download folder read failed: {error}"),
@@ -2556,6 +2827,9 @@ fn download_audio_list(folder: String) -> Result<Vec<DownloadDiscoveredFile>, Co
         if !path.is_file() || !is_local_audio_file(&path) {
             continue;
         }
+        let Ok(path) = approved_download_folder(&path) else {
+            continue;
+        };
         let Some(track_id) = parse_download_track_id(&path) else {
             continue;
         };
@@ -3074,6 +3348,34 @@ async fn try_youtube_api(
     })
 }
 
+fn prepare_proxy_auth_headers(
+    headers: &mut HashMap<String, String>,
+    request_url: &url::Url,
+    jar: &YoutubeCookieJar,
+) -> Result<(), CommandError> {
+    let wants_backend_auth = is_youtube_cookie_host(request_url)
+        && header_value(headers, "cookie") == Some(BACKEND_AUTH_MARKER);
+    // Neither a caller-supplied cookie nor caller-supplied auth is ever forwarded.
+    headers.retain(|key, _| {
+        !key.eq_ignore_ascii_case("cookie")
+            && !key.eq_ignore_ascii_case("authorization")
+            && !key.eq_ignore_ascii_case("proxy-authorization")
+            && !key.eq_ignore_ascii_case("host")
+    });
+    if wants_backend_auth {
+        let live_cookie = jar
+            .0
+            .lock()
+            .map_err(|_| cache_error("YouTube session lock unavailable"))?
+            .cookie
+            .clone()
+            .ok_or_else(|| cache_error("YouTube session is not available"))?;
+        headers.insert("Cookie".to_string(), live_cookie.clone());
+        sync_youtube_cookie_auth(headers, request_url, &live_cookie);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn proxy_http_request(
     app: tauri::AppHandle,
@@ -3084,6 +3386,11 @@ async fn proxy_http_request(
     let request_url = url::Url::parse(&input.url).map_err(|error| CommandError {
         message: format!("invalid URL: {error}"),
     })?;
+    if !allowed_proxy_url(&request_url) {
+        return Err(cache_error(
+            "HTTP proxy destination is not an approved HTTPS service",
+        ));
+    }
     let request_target = format!(
         "{}://{}{}",
         request_url.scheme(),
@@ -3098,18 +3405,20 @@ async fn proxy_http_request(
         input.body_base64.is_some()
     );
 
-    let youtube_host = is_youtube_cookie_host(&request_url);
-    if youtube_host {
-        let live_cookie = jar.0.lock().ok().and_then(|state| state.cookie.clone());
-        if let Some(live_cookie) = live_cookie {
-            sync_youtube_cookie_auth(&mut input.headers, &request_url, &live_cookie);
-        }
-    }
+    prepare_proxy_auth_headers(&mut input.headers, &request_url, &jar)?;
 
     eprintln!("[internal][tauri][debug] proxy_http_request headers:");
     for (key, value) in &input.headers {
         let normalized_key = key.to_ascii_lowercase();
-        let safe_value = if normalized_key == "authorization" || normalized_key == "cookie" {
+        let safe_value = if normalized_key == "authorization"
+            || normalized_key == "cookie"
+            || normalized_key == "referer"
+            || [
+                "token", "visitor", "identity", "session", "secret", "api-key",
+            ]
+            .iter()
+            .any(|part| normalized_key.contains(part))
+        {
             "[redacted]"
         } else {
             value
@@ -3127,6 +3436,7 @@ async fn proxy_http_request(
     })?;
 
     let mut client_builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36");
 
     if let Some(timeout_ms) = input.timeout_ms {
@@ -3156,59 +3466,89 @@ async fn proxy_http_request(
     }
 
     if let Some(body_base64) = input.body_base64 {
+        if body_base64.len() > PROXY_REQUEST_MAX_BYTES.saturating_mul(4) / 3 + 4 {
+            return Err(cache_error(
+                "HTTP proxy request body exceeds the 8 MB limit",
+            ));
+        }
         let bytes = STANDARD.decode(body_base64).map_err(|error| {
             eprintln!(
                 "[internal][tauri][error] proxy_http_request body decode failed url={} error={}",
-                input.url, error
+                request_target, error
             );
             CommandError {
                 message: format!("invalid body encoding: {error}"),
             }
         })?;
+        if bytes.len() > PROXY_REQUEST_MAX_BYTES {
+            return Err(cache_error(
+                "HTTP proxy request body exceeds the 8 MB limit",
+            ));
+        }
         request = request.body(bytes);
     }
 
-    let response = request.send().await.map_err(|error| {
+    let mut response = request.send().await.map_err(|error| {
+        let kind = if error.is_timeout() {
+            "timeout"
+        } else if error.is_connect() {
+            "connection"
+        } else if error.is_request() {
+            "request"
+        } else if error.is_decode() {
+            "decode"
+        } else {
+            "other"
+        };
         eprintln!(
-            "[internal][tauri][error] proxy_http_request request failed url={} error={}",
-            input.url, error
+            "[internal][tauri][error] proxy_http_request request failed url={} kind={}",
+            request_target, kind
         );
         CommandError {
-            message: format!("request failed: {error}"),
+            message: format!("request failed ({kind})"),
         }
     })?;
 
     let status = response.status().as_u16();
     let mut headers = HashMap::new();
     for (key, value) in response.headers() {
+        if key == reqwest::header::SET_COOKIE {
+            continue;
+        }
         if let Ok(value_str) = value.to_str() {
             headers.insert(key.to_string(), value_str.to_string());
         }
     }
 
-    let refreshed_cookie = if youtube_host {
+    if is_youtube_cookie_host(&request_url) {
         let set_cookies = response
             .headers()
             .get_all(reqwest::header::SET_COOKIE)
             .iter()
             .filter_map(|value| value.to_str().ok().map(str::to_string))
             .collect::<Vec<_>>();
-        (!set_cookies.is_empty())
-            .then(|| refresh_youtube_cookie_jar(&app, &jar, &set_cookies))
-            .flatten()
-    } else {
-        None
-    };
-
-    let body = response.bytes().await.map_err(|error| {
-        eprintln!(
-            "[internal][tauri][error] proxy_http_request body read failed url={} error={}",
-            input.url, error
-        );
-        CommandError {
-            message: format!("read body failed: {error}"),
+        if !set_cookies.is_empty() {
+            let _ = refresh_youtube_cookie_jar(&app, &jar, &set_cookies);
         }
-    })?;
+    }
+
+    if response
+        .content_length()
+        .is_some_and(|length| length > PROXY_RESPONSE_MAX_BYTES as u64)
+    {
+        return Err(cache_error("HTTP proxy response exceeds the 64 MB limit"));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| cache_error(format!("HTTP proxy body read failed: {error}")))?
+    {
+        if body.len().saturating_add(chunk.len()) > PROXY_RESPONSE_MAX_BYTES {
+            return Err(cache_error("HTTP proxy response exceeds the 64 MB limit"));
+        }
+        body.extend_from_slice(&chunk);
+    }
 
     if request_url.path().ends_with("/browse") && status < 400 {
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
@@ -3248,7 +3588,6 @@ async fn proxy_http_request(
         status,
         headers,
         body_base64: STANDARD.encode(body),
-        cookie: refreshed_cookie,
     })
 }
 
@@ -3316,6 +3655,133 @@ fn discord_rpc_clear(
     Ok(())
 }
 
+#[cfg(any(not(debug_assertions), test))]
+fn asset_csp_for_path(path: &str, csp: Option<String>) -> Option<String> {
+    if !matches!(path, "/" | "/index.html" | "/mini.html") {
+        return csp;
+    }
+    csp.map(|value| {
+        value
+            .split(';')
+            .map(|directive| {
+                let trimmed = directive.trim();
+                if !trimmed.starts_with("script-src ") {
+                    return trimmed.to_string();
+                }
+                trimmed
+                    .split_whitespace()
+                    .filter(|token| {
+                        *token != "https://www.youtube.com" && *token != "https://s.ytimg.com"
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
+}
+
+#[cfg(not(debug_assertions))]
+fn loopback_assets_plugin<R: tauri::Runtime>(port: u16) -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("loopback-assets")
+        .setup(move |app, _api| {
+            // Bind both loopback families before any webview loads. WebView2 can
+            // resolve localhost to either ::1 or 127.0.0.1 on Windows.
+            let ipv4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
+            let ipv6 = TcpListener::bind((Ipv6Addr::LOCALHOST, port))?;
+            for listener in [ipv4, ipv6] {
+                let server = HttpServer::from_listener(listener, None)
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+                let resolver = app.asset_resolver();
+                thread::spawn(move || {
+                    for request in server.incoming_requests() {
+                        let valid_host = request.headers().iter().any(|header| {
+                            header.field.equiv("Host")
+                                && (header.value.as_str() == format!("localhost:{port}")
+                                    || header.value.as_str() == format!("127.0.0.1:{port}"))
+                        });
+                        if !valid_host {
+                            let _ = request.respond(HttpResponse::empty(403));
+                            continue;
+                        }
+                        if request.method() != &HttpMethod::Get
+                            && request.method() != &HttpMethod::Head
+                        {
+                            let _ = request.respond(HttpResponse::empty(405));
+                            continue;
+                        }
+                        let path = request.url().split('?').next().unwrap_or("/").to_string();
+                        if let Some(asset) = resolver.get(path.clone()) {
+                            let csp_header = asset_csp_for_path(&path, asset.csp_header);
+                            let body = if request.method() == &HttpMethod::Head {
+                                Vec::new()
+                            } else {
+                                asset.bytes
+                            };
+                            let mut response = HttpResponse::from_data(body);
+                            for (name, value) in [
+                                ("Content-Type", Some(asset.mime_type)),
+                                ("Content-Security-Policy", csp_header),
+                                ("Cache-Control", Some("no-cache".to_string())),
+                                ("X-Content-Type-Options", Some("nosniff".to_string())),
+                            ] {
+                                if let Some(value) = value {
+                                    if let Ok(header) =
+                                        HttpHeader::from_bytes(name.as_bytes(), value.as_bytes())
+                                    {
+                                        response.add_header(header);
+                                    }
+                                }
+                            }
+                            let _ = request.respond(response);
+                        } else {
+                            let _ = request.respond(HttpResponse::empty(404));
+                        }
+                    }
+                });
+            }
+            Ok(())
+        })
+        .build()
+}
+
+fn allows_app_navigation(label: &str, url: &url::Url, port: u16) -> bool {
+    if !matches!(label, "main" | "mini-player" | "isolated-youtube-player") {
+        // The Google sign-in webview is unprivileged and uses Google redirects.
+        return true;
+    }
+    url.scheme() == "http" && url.host_str() == Some("localhost") && url.port() == Some(port)
+}
+
+fn app_navigation_guard<R: tauri::Runtime>(port: u16) -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("app-navigation-guard")
+        .on_navigation(move |webview, url| allows_app_navigation(webview.label(), url, port))
+        .build()
+}
+
+fn position_isolated_player_window(app: &tauri::AppHandle) {
+    let (Some(main), Some(player)) = (
+        app.get_webview_window("main"),
+        app.get_webview_window("isolated-youtube-player"),
+    ) else {
+        return;
+    };
+    let (Ok(position), Ok(size)) = (main.outer_position(), main.outer_size()) else {
+        return;
+    };
+    let x = position
+        .x
+        .saturating_add(size.width as i32)
+        .saturating_sub(200);
+    let y = position
+        .y
+        .saturating_add(size.height as i32)
+        .saturating_sub(200);
+    let _ = player.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+        x, y,
+    )));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize Discord RPC manager
@@ -3345,7 +3811,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init());
 
     #[cfg(not(debug_assertions))]
-    {
+    let player_shell_url = {
         let port = pick_unused_port().expect("failed to find an unused localhost port");
         let url: url::Url = format!("http://localhost:{}", port)
             .parse()
@@ -3353,8 +3819,20 @@ pub fn run() {
         let _window_url = WindowUrl::External(url.clone());
 
         context.config_mut().build.frontend_dist = Some(FrontendDist::Url(url));
-        builder = builder.plugin(tauri_plugin_localhost::Builder::new(port).build());
-    }
+        builder = builder.plugin(loopback_assets_plugin(port));
+        builder = builder.plugin(app_navigation_guard(port));
+        format!("http://localhost:{port}/isolated-player-shell.html")
+            .parse::<url::Url>()
+            .expect("failed to parse isolated player URL")
+    };
+
+    #[cfg(debug_assertions)]
+    let player_shell_url = {
+        builder = builder.plugin(app_navigation_guard(1420));
+        "http://localhost:1420/isolated-player-shell.html"
+            .parse::<url::Url>()
+            .expect("failed to parse development player URL")
+    };
 
     #[cfg(target_os = "windows")]
     let builder = builder.manage(windows_media::WindowsMediaSession::new());
@@ -3362,9 +3840,30 @@ pub fn run() {
     let builder = builder.manage(macos_media::MacosMediaSession::new());
 
     builder
-        .setup(|app| {
+        .setup(move |app| {
             if let Err(error) = initialize_app_log(app.handle()) {
                 std::eprintln!("[internal][tauri][warn] {}", error.message);
+            }
+
+            let player = tauri::WebviewWindowBuilder::new(
+                app,
+                "isolated-youtube-player",
+                tauri::WebviewUrl::External(player_shell_url.clone()),
+            )
+            .title("YouTube player")
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .inner_size(200.0, 200.0)
+            .visible(false)
+            .build()?;
+            player.set_ignore_cursor_events(true)?;
+            position_isolated_player_window(app.handle());
+            player.show()?;
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.set_focus();
             }
 
             let tray_menu = MenuBuilder::new(app)
@@ -3402,6 +3901,11 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(move |window, event| match event {
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                if window.label() == "main" {
+                    position_isolated_player_window(window.app_handle());
+                }
+            }
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 eprintln!(
                     "[internal][tauri][info] window close requested label={}",
@@ -3454,6 +3958,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             quit_app,
+            autostart_set_confirmed,
             frontend_log,
             app_setting_get,
             app_setting_set,
@@ -3462,10 +3967,11 @@ pub fn run() {
             system_username_get,
             custom_theme_css_import,
             custom_theme_css_get,
-            open_current_log,
+            open_log_folder,
             fetch_audio_bytes,
             fetch_audio_source,
             download_default_folder,
+            download_folder_validate,
             download_audio_save,
             download_audio_cancel,
             download_audio_file_exists,
@@ -3473,11 +3979,10 @@ pub fn run() {
             download_audio_list,
             fetch_youtube_music_audio,
             proxy_http_request,
-            save_youtube_credentials,
-            load_youtube_credentials,
             delete_youtube_credentials,
-            load_youtube_music_cookie,
+            youtube_music_session_status,
             sign_in_youtube_music,
+            session_import::import_browser_session,
             delete_youtube_music_cookie,
             cache_get,
             cache_set,
@@ -3486,10 +3991,18 @@ pub fn run() {
             cache_clear,
             local_audio_scan,
             local_audio_read,
+            local_music_folder_validate,
             lastfm::lastfm_auth_token,
             lastfm::lastfm_complete_auth,
             lastfm::lastfm_disconnect,
             lastfm::lastfm_get_session,
+            liked_dates::liked_dates_connect,
+            liked_dates::liked_dates_read,
+            liked_dates::liked_dates_sync,
+            liked_dates::liked_dates_lookup,
+            liked_dates::liked_dates_publications,
+            liked_dates::liked_dates_disconnect,
+            liked_dates::liked_dates_invalidate,
             lastfm::lastfm_scrobble,
             lastfm::lastfm_update_now_playing,
             discord_rpc_update,
@@ -3506,11 +4019,50 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        cookie_domain_matches, get_sapisid_auth_cookie, is_google_media_cookie_host, sha1_hex,
-        sync_youtube_cookie_auth,
+        allowed_audio_url, allowed_proxy_url, allows_app_navigation, asset_csp_for_path,
+        cookie_domain_matches, evict_overflowing_media_items, get_sapisid_auth_cookie,
+        header_value, is_google_media_cookie_host, prepare_proxy_auth_headers, previous_log_path,
+        rotate_app_logs, sha1_hex, sync_youtube_cookie_auth, CookieJarState, MediaItem,
+        YoutubeCookieJar, BACKEND_AUTH_MARKER, MEDIA_SERVER_MAX_ITEMS,
     };
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::fs;
+    use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn log_rotation_keeps_three_previous_sessions() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let log_dir =
+            std::env::temp_dir().join(format!("jamc-log-rotation-{}-{nonce}", std::process::id()));
+        fs::create_dir(&log_dir).unwrap();
+        let current = log_dir.join("current.log");
+
+        for session in 1..=5 {
+            fs::write(&current, format!("session-{session}\n")).unwrap();
+            assert!(rotate_app_logs(&log_dir, &current).unwrap());
+        }
+        assert_eq!(
+            fs::read_to_string(previous_log_path(&log_dir, 1)).unwrap(),
+            "session-5\n"
+        );
+        assert_eq!(
+            fs::read_to_string(previous_log_path(&log_dir, 2)).unwrap(),
+            "session-4\n"
+        );
+        assert_eq!(
+            fs::read_to_string(previous_log_path(&log_dir, 3)).unwrap(),
+            "session-3\n"
+        );
+        assert!(!previous_log_path(&log_dir, 4).exists());
+
+        // Only the exact directory created by this test is removed.
+        assert!(log_dir.starts_with(std::env::temp_dir()));
+        fs::remove_dir_all(log_dir).unwrap();
+    }
 
     #[test]
     fn media_server_eviction_keeps_most_recent_items() {
@@ -3561,6 +4113,138 @@ mod tests {
                 "expected {host} to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn proxy_allows_only_required_https_services() {
+        for target in [
+            "https://music.youtube.com/youtubei/v1/browse",
+            "https://rr1.googlevideo.com/videoplayback",
+            "https://i.ytimg.com/vi/id/hqdefault.jpg",
+            "https://lrclib.net/api/get",
+            "https://youtubei.googleapis.com/youtubei/v1/player",
+        ] {
+            assert!(
+                allowed_proxy_url(&url::Url::parse(target).unwrap()),
+                "{target}"
+            );
+        }
+        for target in [
+            "http://127.0.0.1:8080/private",
+            "https://127.0.0.1/private",
+            "https://music.youtube.com.evil.example/steal",
+            "https://music.youtube.com:444/private",
+            "https://user:pass@music.youtube.com/private",
+            "https://api.github.com/repos/private",
+        ] {
+            assert!(
+                !allowed_proxy_url(&url::Url::parse(target).unwrap()),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn privileged_navigation_stays_on_own_localhost_port() {
+        let own = url::Url::parse("http://localhost:54321/mini.html").unwrap();
+        assert!(allows_app_navigation("main", &own, 54321));
+        assert!(allows_app_navigation("mini-player", &own, 54321));
+        assert!(allows_app_navigation(
+            "isolated-youtube-player",
+            &own,
+            54321
+        ));
+        for target in [
+            "http://localhost:54322/",
+            "http://127.0.0.1:54321/",
+            "https://localhost:54321/",
+            "https://music.youtube.com/",
+        ] {
+            assert!(!allows_app_navigation(
+                "main",
+                &url::Url::parse(target).unwrap(),
+                54321
+            ));
+        }
+        assert!(allows_app_navigation(
+            "youtube-login",
+            &url::Url::parse("https://accounts.google.com/").unwrap(),
+            54321
+        ));
+    }
+
+    #[test]
+    fn remote_youtube_scripts_are_allowed_only_in_player_shell() {
+        let csp = "script-src 'self' https://www.youtube.com https://s.ytimg.com 'sha256-test'; frame-src https://www.youtube.com";
+        let main = asset_csp_for_path("/index.html", Some(csp.to_string())).unwrap();
+        assert!(!main.contains("script-src 'self' https://www.youtube.com"));
+        assert!(main.contains("'sha256-test'"));
+        assert!(main.contains("frame-src https://www.youtube.com"));
+        assert_eq!(
+            asset_csp_for_path("/isolated-player-shell.html", Some(csp.to_string())),
+            Some(csp.to_string())
+        );
+    }
+
+    #[test]
+    fn proxy_auth_accepts_only_marker_for_youtube_host() {
+        let jar = YoutubeCookieJar(Mutex::new(CookieJarState {
+            cookie: Some("SAPISID=test-value".to_string()),
+            persisted_at: None,
+        }));
+        let mut headers = HashMap::from([
+            ("cookie".to_string(), BACKEND_AUTH_MARKER.to_string()),
+            ("authorization".to_string(), "caller-value".to_string()),
+            ("host".to_string(), "caller-host".to_string()),
+        ]);
+        assert!(prepare_proxy_auth_headers(
+            &mut headers,
+            &url::Url::parse("https://music.youtube.com/youtubei/v1/browse").unwrap(),
+            &jar,
+        )
+        .is_ok());
+        assert_eq!(
+            headers.get("Cookie").map(String::as_str),
+            Some("SAPISID=test-value")
+        );
+        assert!(header_value(&headers, "Authorization").is_some());
+        assert!(!headers.contains_key("host"));
+        assert!(!headers.contains_key("cookie"));
+
+        let mut unauthorized = HashMap::from([
+            ("Cookie".to_string(), "SAPISID=caller-value".to_string()),
+            ("Authorization".to_string(), "caller-value".to_string()),
+        ]);
+        assert!(prepare_proxy_auth_headers(
+            &mut unauthorized,
+            &url::Url::parse("https://music.youtube.com/youtubei/v1/browse").unwrap(),
+            &jar,
+        )
+        .is_ok());
+        assert!(unauthorized.is_empty());
+
+        let mut other_host =
+            HashMap::from([("Cookie".to_string(), BACKEND_AUTH_MARKER.to_string())]);
+        assert!(prepare_proxy_auth_headers(
+            &mut other_host,
+            &url::Url::parse("https://lrclib.net/api/get").unwrap(),
+            &jar,
+        )
+        .is_ok());
+        assert!(other_host.is_empty());
+    }
+
+    #[test]
+    fn audio_requires_google_https_host() {
+        assert!(allowed_audio_url(
+            &url::Url::parse("https://rr1.googlevideo.com/videoplayback").unwrap()
+        ));
+        assert!(!allowed_audio_url(
+            &url::Url::parse("https://evil.example/audio").unwrap()
+        ));
+        assert!(!allowed_audio_url(
+            &url::Url::parse("http://rr1.googlevideo.com/audio").unwrap()
+        ));
     }
 
     #[test]

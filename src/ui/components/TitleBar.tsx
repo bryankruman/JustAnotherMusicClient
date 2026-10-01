@@ -1,5 +1,5 @@
 import { IconLayoutDashboard } from "@tabler/icons-react";
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import styles from "./TitleBar.module.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { logInternalError } from "../../internal/logging";
@@ -38,7 +38,8 @@ export function TitleBar({
   onReorderTab,
   onboardingFirstTabId,
 }: TitleBarProps) {
-  const appWindow = getCurrentWindow();
+  const appWindow = useMemo(() => getCurrentWindow(), []);
+  const [isMaximized, setIsMaximized] = useState(false);
   const nativeWindowControls = useNativeWindowControls();
   const windowsStyleWindowControls = useWindowsStyleWindowControls();
   const homePointerRef = useRef<{
@@ -48,6 +49,31 @@ export function TitleBar({
   } | null>(null);
   const suppressHomeClickRef = useRef(false);
   const hideHomeText = sidebarWidth <= 120;
+
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    const updateMaximized = async () => {
+      try {
+        const maximized = await appWindow.isMaximized();
+        if (active) setIsMaximized(maximized);
+      } catch (error) {
+        logInternalError("TitleBar.isMaximized failed", error);
+      }
+    };
+    void appWindow.onResized(() => void updateMaximized()).then((dispose) => {
+      if (active) {
+        unlisten = dispose;
+        void updateMaximized();
+      } else {
+        dispose();
+      }
+    }).catch((error) => logInternalError("TitleBar.onResized failed", error));
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [appWindow]);
 
   const homeButtonClasses = useMemo(() => [
     styles.homeButton,
@@ -183,17 +209,25 @@ export function TitleBar({
             onClick={() => void handleMinimize()}
           >
             <span aria-hidden="true" className={styles.windowIcon}>
-              &#8211;
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <path d="M0 5.5H10" stroke="currentColor" />
+              </svg>
             </span>
           </button>
           <button
             type="button"
-            aria-label="Maximize"
+            aria-label={isMaximized ? "Restore" : "Maximize"}
             className={`${styles.windowButton} ${styles.windowButtonMaximize}`}
             onClick={() => void handleToggleMaximize()}
           >
             <span aria-hidden="true" className={styles.windowIcon}>
-              □
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                {isMaximized ? (
+                  <path d="M2.5 2.5V.5H9.5V7.5H7.5M.5 2.5H7.5V9.5H.5Z" stroke="currentColor" />
+                ) : (
+                  <rect x=".5" y=".5" width="9" height="9" stroke="currentColor" />
+                )}
+              </svg>
             </span>
           </button>
           <button
@@ -207,7 +241,9 @@ export function TitleBar({
             }}
           >
             <span aria-hidden="true" className={styles.windowIcon}>
-              &#10005;
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <path d="M.5.5L9.5 9.5M9.5.5L.5 9.5" stroke="currentColor" />
+              </svg>
             </span>
           </button>
         </div>

@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "session-import",
+  "description": "Native-confirmed session import for the main app only",
+  "webviews": ["main"],
+  "permissions": ["allow-import-browser-session"],
+  "remote": { "urls": ["http://localhost:*/*"] }
+}

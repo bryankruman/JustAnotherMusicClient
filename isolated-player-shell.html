@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Isolated YouTube player shell</title>
+    <style>
+      html, body, #players { width: 200px; height: 200px; margin: 0; overflow: hidden; background: transparent; }
+      .player-host { position: absolute; inset: 0; width: 200px; height: 200px; opacity: 0.01; pointer-events: none; }
+      .player-host iframe { width: 200px; height: 200px; border: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="players"></div>
+    <script type="module" src="/src/player/isolatedPlayerShell.ts"></script>
+  </body>
+</html>

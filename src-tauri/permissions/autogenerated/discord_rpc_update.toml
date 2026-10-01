@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-discord-rpc-update"
+description = "Enables the discord_rpc_update command without any pre-configured scope."
+commands.allow = ["discord_rpc_update"]
+
+[[permission]]
+identifier = "deny-discord-rpc-update"
+description = "Denies the discord_rpc_update command without any pre-configured scope."
+commands.deny = ["discord_rpc_update"]

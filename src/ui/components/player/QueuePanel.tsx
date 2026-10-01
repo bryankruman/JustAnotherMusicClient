@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { usePlayerSession, playerController } from "../../../player/playerStore";
 import styles from "./QueuePanel.module.css";
 import { ArtistLinks } from "../ArtistLinks";
+import { TrackArtwork } from "../TrackArtwork";
 
 interface QueuePanelProps {
   isOpen: boolean;
@@ -11,6 +12,7 @@ interface QueuePanelProps {
 
 export function QueuePanel({ isOpen, onClose }: QueuePanelProps) {
   const panelRef = useRef<HTMLElement>(null);
+  const currentTrackRef = useRef<HTMLDivElement>(null);
   const draggedElementRef = useRef<HTMLElement | null>(null);
   const captureElementRef = useRef<HTMLElement | null>(null);
   const pointerDragRef = useRef<{
@@ -30,11 +32,23 @@ export function QueuePanel({ isOpen, onClose }: QueuePanelProps) {
   const playerSession = usePlayerSession();
   const queue = playerSession?.queue ?? [];
   const queueIndex = playerSession?.queueIndex ?? -1;
+  const currentTrack = playerSession?.currentTrack;
+  const history = playerSession?.history ?? [];
+  const previousTracks = currentTrack && history[history.length - 1]?.id === currentTrack.id
+    ? history.slice(0, -1)
+    : history;
   const manualQueueLength = playerSession?.manualQueueLength ?? 0;
   const upcomingStartIndex = Math.max(queueIndex + 1, 0);
   const upcoming = queue.slice(upcomingStartIndex);
   const manualQueue = upcoming.slice(0, manualQueueLength);
   const autoQueue = upcoming.slice(manualQueueLength);
+
+  useEffect(() => {
+    if (isOpen && currentTrackRef.current && panelRef.current) {
+      panelRef.current.scrollTop += currentTrackRef.current.getBoundingClientRect().top
+        - panelRef.current.getBoundingClientRect().top - 80;
+    }
+  }, [isOpen, currentTrack?.id]);
 
   const handleRemove = (offset: number) => {
     playerController.removeFromQueueAt(upcomingStartIndex + offset);
@@ -212,8 +226,50 @@ export function QueuePanel({ isOpen, onClose }: QueuePanelProps) {
         </button>
       </div>
 
+      {previousTracks.length > 0 && (
+        <div className={styles.section}>
+          <div className={styles.sectionHeader}>Previously played</div>
+          <div className={styles.trackList}>
+            {previousTracks.map((track, index) => (
+              <div key={`${track.id}:${index}`} className={`${styles.trackItem} ${styles.historyItem}`}>
+                <button
+                  type="button"
+                  className={styles.trackMain}
+                  onClick={() => {
+                    playerController.playNext(track);
+                    void playerController.playQueueTrackAt(upcomingStartIndex);
+                  }}
+                >
+                  <TrackArtwork artworkUrl={track.artworkUrl} className={styles.trackArtwork} iconSize={20} />
+                  <span className={styles.trackDetails}>
+                    <span className={styles.trackTitle}>{track.title}</span>
+                    <ArtistLinks className={styles.trackArtist} artists={track.artists} fallback={track.artist} />
+                  </span>
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {currentTrack && (
+        <div className={styles.section}>
+          <div className={styles.sectionHeader}>Now playing</div>
+          <div ref={currentTrackRef} className={`${styles.trackItem} ${styles.currentItem}`} aria-current="true">
+            <div className={styles.currentTrackMain}>
+              <TrackArtwork artworkUrl={currentTrack.artworkUrl} className={styles.trackArtwork} iconSize={20} />
+              <span className={styles.trackDetails}>
+                <span className={styles.trackTitle}>{currentTrack.title}</span>
+                <ArtistLinks className={styles.trackArtist} artists={currentTrack.artists} fallback={currentTrack.artist} />
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className={styles.sectionHeader}>Up next</div>
       {upcoming.length === 0 ? (
-        <p className={styles.emptyMessage}>No queued songs.</p>
+        <p className={styles.emptyMessage}>No upcoming songs.</p>
       ) : (
         <>
           {manualQueue.length > 0 && (
@@ -242,7 +298,7 @@ export function QueuePanel({ isOpen, onClose }: QueuePanelProps) {
                       }
                       onClick={() => handlePlay(index)}
                     >
-                      <span className={styles.trackIndex}>{index + 1}</span>
+                      <TrackArtwork artworkUrl={track.artworkUrl} className={styles.trackArtwork} iconSize={20} />
                       <span className={styles.trackDetails}>
                         <span className={styles.trackTitle}>{track.title}</span>
                         <ArtistLinks
@@ -297,9 +353,7 @@ export function QueuePanel({ isOpen, onClose }: QueuePanelProps) {
                       }
                       onClick={() => handlePlay(manualQueueLength + index)}
                     >
-                      <span className={styles.trackIndex}>
-                        {manualQueueLength + index + 1}
-                      </span>
+                      <TrackArtwork artworkUrl={track.artworkUrl} className={styles.trackArtwork} iconSize={20} />
                       <span className={styles.trackDetails}>
                         <span className={styles.trackTitle}>{track.title}</span>
                         <ArtistLinks

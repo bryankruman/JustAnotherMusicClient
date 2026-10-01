@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-liked-dates-publications"
+description = "Enables the liked_dates_publications command without any pre-configured scope."
+commands.allow = ["liked_dates_publications"]
+
+[[permission]]
+identifier = "deny-liked-dates-publications"
+description = "Denies the liked_dates_publications command without any pre-configured scope."
+commands.deny = ["liked_dates_publications"]

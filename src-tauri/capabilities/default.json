@@ -1,9 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main","mini-player"],
+  "description": "Capability for the main and mini-player webviews only",
+  "webviews": ["main", "mini-player"],
   "permissions": [
+    "main-commands",
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-minimize",
@@ -14,11 +15,18 @@
     "core:window:allow-unmaximize",
     "core:window:allow-set-fullscreen",
     "core:window:allow-set-decorations",
-    "autostart:allow-enable",
-    "autostart:allow-disable",
     "autostart:allow-is-enabled",
-    "opener:default",
-    "updater:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/2latemc/JustAnotherMusicClient" },
+        { "url": "https://github.com/2latemc/JustAnotherMusicClient/**" },
+        { "url": "https://ko-fi.com/totally2late" },
+        { "url": "https://justanothermusicclient.userjot.com/**" },
+        { "url": "https://www.last.fm/api/auth/**" }
+      ]
+    },
+    "updater:allow-check",
     "process:allow-restart",
     "dialog:allow-open",
     "dialog:allow-message",
@@ -37,53 +45,7 @@
   ],
   "remote": {
     "urls": [
-      "http://localhost/**",
-      "http://localhost:*/*",
-      "http://127.0.0.1/**",
-      "http://127.0.0.1:*/*"
-    ]
-  },
-  "command": {
-    "allow": [
-      "quit_app",
-      "frontend_log",
-      "app_setting_get",
-      "app_setting_set",
-      "app_setting_remove",
-      "app_settings_clear",
-      "custom_theme_css_import",
-      "custom_theme_css_get",
-      "cache_get",
-      "cache_set",
-      "cache_stats",
-      "cache_set_max_bytes",
-      "cache_clear",
-      "local_audio_scan",
-      "local_audio_read",
-      "fetch_audio_bytes",
-      "fetch_audio_source",
-      "download_default_folder",
-      "download_audio_save",
-      "download_audio_cancel",
-      "download_audio_file_exists",
-      "download_audio_source",
-      "download_audio_list",
-      "fetch_youtube_music_audio",
-      "proxy_http_request",
-      "update_macos_media_session",
-      "update_windows_media_session",
-      "save_youtube_credentials",
-      "load_youtube_credentials",
-      "delete_youtube_credentials",
-      "load_youtube_music_cookie",
-      "sign_in_youtube_music",
-      "delete_youtube_music_cookie",
-      "lastfm_auth_token",
-      "lastfm_complete_auth",
-      "lastfm_disconnect",
-      "lastfm_get_session",
-      "lastfm_scrobble",
-      "lastfm_update_now_playing"
+      "http://localhost:*/*"
     ]
   }
 }

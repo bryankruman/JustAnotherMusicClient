@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-youtube-music-session-status"
+description = "Enables the youtube_music_session_status command without any pre-configured scope."
+commands.allow = ["youtube_music_session_status"]
+
+[[permission]]
+identifier = "deny-youtube-music-session-status"
+description = "Denies the youtube_music_session_status command without any pre-configured scope."
+commands.deny = ["youtube_music_session_status"]

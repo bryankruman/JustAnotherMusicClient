@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-liked-dates-read"
+description = "Enables the liked_dates_read command without any pre-configured scope."
+commands.allow = ["liked_dates_read"]
+
+[[permission]]
+identifier = "deny-liked-dates-read"
+description = "Denies the liked_dates_read command without any pre-configured scope."
+commands.deny = ["liked_dates_read"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-app-settings-clear"
+description = "Enables the app_settings_clear command without any pre-configured scope."
+commands.allow = ["app_settings_clear"]
+
+[[permission]]
+identifier = "deny-app-settings-clear"
+description = "Denies the app_settings_clear command without any pre-configured scope."
+commands.deny = ["app_settings_clear"]

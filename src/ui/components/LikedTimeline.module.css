@@ -1,0 +1,42 @@
+.timeline {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+  max-height: calc(100dvh - 190px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+  padding: 4px 6px 12px 12px;
+  border-left: 1px solid var(--color-border);
+}
+.heading { color: var(--color-text-secondary); font-size: 11px; margin: 0 0 10px 4px; }
+.year { margin-bottom: 3px; }
+.timeline button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.timeline button:hover { background: var(--color-bg-overlay); color: var(--color-text-primary); }
+.timeline button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.timeline .activeYear { color: var(--color-text-primary); font-weight: 700; }
+.timeline button[aria-current="location"] { color: var(--color-accent); font-weight: 700; background: var(--color-bg-overlay); }
+.chevron { width: 14px; flex-shrink: 0; font-size: 10px; }
+.months { padding-left: 14px; margin: 2px 0 7px; }
+.months button { font-size: 11px; }
+@media (max-width: 700px) {
+  .timeline { padding-left: 5px; padding-right: 0; }
+  .timeline button { padding-left: 2px; padding-right: 2px; }
+  .months { padding-left: 9px; }
+  .chevron { width: 10px; }
+}

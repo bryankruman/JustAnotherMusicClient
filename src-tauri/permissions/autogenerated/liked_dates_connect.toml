@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-liked-dates-connect"
+description = "Enables the liked_dates_connect command without any pre-configured scope."
+commands.allow = ["liked_dates_connect"]
+
+[[permission]]
+identifier = "deny-liked-dates-connect"
+description = "Denies the liked_dates_connect command without any pre-configured scope."
+commands.deny = ["liked_dates_connect"]

@@ -88,7 +88,7 @@ function ArtworkImage({
       {currentArtworkUrl && !hasError && (
         <img key={`${currentArtworkUrl}:${retryCount}`}
           className={isArtworkLoaded ? styles.imageLoaded : ""}
-          src={currentArtworkUrl} alt="" loading={loading} referrerPolicy="no-referrer"
+          src={currentArtworkUrl} alt="" loading={loading} referrerPolicy="no-referrer" draggable={false}
           onLoad={() => setLoadedArtworkUrl(currentArtworkUrl)}
           onError={() => { setLoadedArtworkUrl(null); setHasError(true); }} />
       )}

@@ -13,23 +13,27 @@ const result = await build({
   },
   bundle: true, write: false, format: "esm", platform: "browser",
   plugins: [{ name: "native-test-double", setup(builder) {
-    builder.onResolve({ filter: /\/logging$|@tauri-apps\/api\/core$|\/tauriFetch$/ }, (args) => ({
+    builder.onResolve({ filter: /\/logging$|@tauri-apps\/api\/core$|\/tauriFetch$|\/isolatedPlayerScript$/ }, (args) => ({
       path: args.path, namespace: "test-double",
     }));
     builder.onLoad({ filter: /.*/, namespace: "test-double" }, (args) => ({ contents:
       args.path.endsWith("logging")
         ? `export const logInternalDebug = () => {}; export const logInternalWarn = () => {};
            export const logInternalInfo = () => {}; export const logInternalError = () => {};`
+        : args.path.endsWith("isolatedPlayerScript")
+          ? `export const evaluatePlayerScript = () => { throw new Error('Unexpected player script'); };`
         : args.path.endsWith("tauriFetch")
-          ? `export const getLiveCookie = () => globalThis.testCookie;
-             export const setLiveCookie = value => { globalThis.testCookie = value; };
+          ? `export const BACKEND_AUTH_MARKER = 'SAPISID=backend-managed';
+             export const getBackendSessionActive = () => globalThis.testSessionActive;
+             export const setBackendSessionActive = value => { globalThis.testSessionActive = value; };
              export const tauriFetch = () => { throw new Error('Unexpected network request'); };`
           : `export const invoke = (command, args) => globalThis.nativeInvoke(command, args);`,
     }));
   } }],
 });
 const { YouTubeMusicDataSource, LibraryController, collectArtworkCandidates, selectArtworkUrl,
-  getVideoArtworkFallback } = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}`);
+  getVideoArtworkFallback } = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}`)
+    .catch((error) => { throw new Error(`Unable to load test bundle: ${error.message}`); });
 
 const library = () => ({ account: { name: "Listener" }, albums: [], playlists: [],
   likedSongsPlaylist: { id: "LM", title: "Liked Songs", owner: "Listener" },
@@ -37,7 +41,7 @@ const library = () => ({ account: { name: "Listener" }, albums: [], playlists: [
 const seed = { id: "abcdefghijk", source: "youtube", title: "First song", artist: "Artist", artworkUrl: "https://example.com/cover.jpg" };
 
 function sourceWithResponse(response) {
-  globalThis.testCookie = "fixture-session";
+  globalThis.testSessionActive = true;
   const cache = new Map([["youtube-music:library:v5", JSON.stringify(library())]]);
   globalThis.nativeInvoke = async (command, args) => {
     if (command === "cache_get") return cache.get(args.key) ?? null;
@@ -81,7 +85,7 @@ test("rejects invalid input before making an account request", async () => {
     { title: "mix", privacy: "INVALID" },
     { title: "mix", privacy: "PRIVATE", initialTrack: { ...seed, source: "local" } },
   ]) await assert.rejects(source.createPlaylist(input));
-  globalThis.testCookie = null;
+  globalThis.testSessionActive = false;
   await assert.rejects(source.createPlaylist({ title: "mix", privacy: "PRIVATE" }), /Sign in/);
   assert.equal(calls.length, 0);
 });

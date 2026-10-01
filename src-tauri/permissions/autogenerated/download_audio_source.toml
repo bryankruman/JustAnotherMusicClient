@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-download-audio-source"
+description = "Enables the download_audio_source command without any pre-configured scope."
+commands.allow = ["download_audio_source"]
+
+[[permission]]
+identifier = "deny-download-audio-source"
+description = "Denies the download_audio_source command without any pre-configured scope."
+commands.deny = ["download_audio_source"]

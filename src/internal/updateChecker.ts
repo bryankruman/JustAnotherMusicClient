@@ -1,6 +1,5 @@
 import { getVersion } from "@tauri-apps/api/app";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import { logInternalError } from "./logging";
 
 const RELEASE_TAG_PREFIX = "v";
@@ -17,12 +16,6 @@ export interface UpdateInfo {
   releaseUrl: string;
   canInstall: boolean;
   update?: Update;
-}
-
-export interface UpdateInstallProgress {
-  downloadedBytes: number;
-  totalBytes?: number;
-  percent?: number;
 }
 
 export async function getInstalledVersion(): Promise<string> {
@@ -91,52 +84,9 @@ export async function checkForUpdates(): Promise<UpdateInfo | null> {
     installedVersion: update.currentVersion,
     version: update.version,
     releaseUrl: `${RELEASES_URL}/${RELEASE_TAG_PREFIX}${encodeURIComponent(update.version)}`,
-    canInstall: true,
+    canInstall: false,
     update,
   };
-}
-
-export async function installUpdate(
-  info: UpdateInfo,
-  onProgress?: (progress: UpdateInstallProgress) => void,
-): Promise<void> {
-  if (!info.update) {
-    throw new Error(
-      "This update cannot be installed automatically. Please download it from the release page.",
-    );
-  }
-
-  let downloadedBytes = 0;
-  let totalBytes: number | undefined;
-
-  const reportProgress = (event: DownloadEvent) => {
-    if (event.event === "Started") {
-      downloadedBytes = 0;
-      totalBytes = event.data.contentLength;
-    } else if (event.event === "Progress") {
-      downloadedBytes += event.data.chunkLength;
-    } else if (event.event === "Finished" && totalBytes !== undefined) {
-      downloadedBytes = totalBytes;
-    }
-
-    onProgress?.({
-      downloadedBytes,
-      totalBytes,
-      percent: totalBytes && totalBytes > 0
-        ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100))
-        : undefined,
-    });
-  };
-
-  try {
-    await info.update.downloadAndInstall(reportProgress);
-    await relaunch();
-  } catch (error) {
-    logInternalError("updateChecker.installUpdate failed", error, {
-      version: info.version,
-    });
-    throw error;
-  }
 }
 
 export function getUpdateFailureMessage(error: unknown): string {

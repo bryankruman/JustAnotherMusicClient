@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-lastfm-get-session"
+description = "Enables the lastfm_get_session command without any pre-configured scope."
+commands.allow = ["lastfm_get_session"]
+
+[[permission]]
+identifier = "deny-lastfm-get-session"
+description = "Denies the lastfm_get_session command without any pre-configured scope."
+commands.deny = ["lastfm_get_session"]
