@@ -4,6 +4,7 @@ import type {
   Artist,
   ArtistPage,
   AuthPrompt,
+  CreatePlaylistInput,
   LibrarySnapshot,
   Playlist,
   TrackPage,
@@ -348,6 +349,24 @@ export class LibraryController {
       throw new Error("Sign in to YouTube Music before adding songs to playlists.");
     }
     return this.dataSource.addTrackToPlaylist(track, playlist);
+  }
+
+  async createPlaylist(input: CreatePlaylistInput): Promise<Playlist> {
+    if (this.state.status === "signed-out" || !this.state.library) {
+      throw new Error("Sign in to YouTube Music before creating a playlist.");
+    }
+    if (!this.dataSource.createPlaylist) {
+      throw new Error("Creating playlists is unavailable.");
+    }
+    const playlist = await this.dataSource.createPlaylist(input);
+    const library = this.state.library;
+    if (library) {
+      this.setState({ library: {
+        ...library,
+        playlists: [playlist, ...library.playlists.filter((item) => item.id !== playlist.id)],
+      } });
+    }
+    return playlist;
   }
 
   async removeTrackFromPlaylist(track: Track, playlist: Playlist): Promise<void> {

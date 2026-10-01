@@ -2,6 +2,7 @@ import type {
   Album,
   ArtistPage,
   AuthPrompt,
+  CreatePlaylistInput,
   LibrarySnapshot,
   Lyrics,
   Playlist,
@@ -45,6 +46,7 @@ export abstract class DataSource {
     onUpdate?: (page: TrackPage) => void,
   ): Promise<TrackPage>;
   setPlaylistSaved?(playlist: Playlist, saved: boolean): Promise<void>;
+  createPlaylist?(input: CreatePlaylistInput): Promise<Playlist>;
   addTrackToPlaylist?(
     track: Track,
     playlist: Playlist,

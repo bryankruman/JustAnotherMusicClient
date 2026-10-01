@@ -23,6 +23,7 @@
 }
 
 .fallbackIcon {
+  flex-shrink: 0;
   opacity: 0.65;
   transition: opacity 160ms var(--easing-smooth);
 }

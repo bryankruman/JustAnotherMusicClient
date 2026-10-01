@@ -31,6 +31,7 @@ dist-ssr
 
 # Tooling caches
 .eslintcache
+.npm-cache/
 
 # Rust application lockfiles should be committed for reproducible builds.
 

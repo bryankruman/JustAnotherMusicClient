@@ -51,6 +51,17 @@ export interface Playlist {
   isSaved?: boolean;
   isEditable?: boolean;
   localPaths?: string[];
+  description?: string;
+  privacy?: PlaylistPrivacy;
+}
+
+export type PlaylistPrivacy = "PRIVATE" | "UNLISTED" | "PUBLIC";
+
+export interface CreatePlaylistInput {
+  title: string;
+  description?: string;
+  privacy: PlaylistPrivacy;
+  initialTrack?: Track;
 }
 
 export interface Artist {

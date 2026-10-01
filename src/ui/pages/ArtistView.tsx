@@ -6,11 +6,9 @@ import {
   IconCopy,
   IconLoader2,
   IconPlayerPlay,
-  IconUser,
   IconUserPlus,
 } from "@tabler/icons-react";
 import type { Album, Artist, ArtistPage, Playlist, Track } from "../../datasource/types";
-import { getArtworkUrlCandidates } from "../../datasource/youtube/artwork";
 import type { LibraryController } from "../../player/LibraryController";
 import type { PlayerControllerActions } from "../../player/playerStore";
 import { shuffleTracks } from "../../player/shuffleTracks";
@@ -108,16 +106,9 @@ export function ArtistView({
   ) ?? [];
 
   const displayedArtist = page?.artist ?? artist;
-  const artistArtworkCandidates = useMemo(
-    () => getArtworkUrlCandidates(displayedArtist?.artworkUrl),
-    [displayedArtist?.artworkUrl],
-  );
-  const [artistArtworkIndex, setArtistArtworkIndex] = useState(0);
-  const currentArtistArtworkUrl = artistArtworkCandidates[artistArtworkIndex];
   const popularSongs = page?.popularSongs.slice(0, 6) ?? [];
 
   useEffect(() => {
-    setArtistArtworkIndex(0);
     setIsSubscribed(page?.subscribed ?? false);
   }, [displayedArtist?.artworkUrl, displayedArtist?.id, page?.subscribed]);
 
@@ -170,25 +161,8 @@ export function ArtistView({
   return (
     <div className={styles.root}>
       <header className={styles.header}>
-        <div className={styles.portrait}>
-          {currentArtistArtworkUrl ? (
-            <img
-              key={currentArtistArtworkUrl}
-              src={currentArtistArtworkUrl}
-              alt=""
-              onError={() => {
-                setArtistArtworkIndex((prev) => prev + 1);
-                // If all candidates failed, try the raw URL one final time
-                // (the raw URL may work without size parameters).
-                if (artistArtworkIndex >= artistArtworkCandidates.length - 1) {
-                  setArtistArtworkIndex(0);
-                }
-              }}
-            />
-          ) : (
-            <IconUser size={84} stroke={1.4} />
-          )}
-        </div>
+        <TrackArtwork className={styles.portrait} artworkUrl={displayedArtist.artworkUrl}
+          iconSize={84} loading="eager" variant="artist" />
         <div className={styles.headerText}>
           <span className={styles.eyebrow}>Artist</span>
           <h1>
@@ -262,6 +236,7 @@ export function ArtistView({
                     <TrackArtwork
                       className={styles.trackArtwork}
                       artworkUrl={track.artworkUrl}
+                      videoId={track.source === "youtube" ? track.id : undefined}
                       iconSize={22}
                     />
                     <span className={styles.trackText}>
@@ -343,6 +318,7 @@ export function ArtistView({
                   <AlbumCard
                     key={playlist.id}
                     artworkUrl={playlist.artworkUrl}
+                    variant="playlist"
                     title={playlist.title}
                     subtitle={playlist.owner}
                     onClick={() => onOpenPlaylist(playlist)}

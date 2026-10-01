@@ -6,6 +6,8 @@ import styles from "./AlbumCard.module.css";
 interface AlbumCardProps {
   color?: string;
   artworkUrl?: string;
+  videoId?: string;
+  variant?: "track" | "album" | "playlist";
   title?: string;
   subtitle?: string;
   subtitleContent?: ReactNode;
@@ -16,6 +18,8 @@ interface AlbumCardProps {
 export function AlbumCard({
   color = "#333333",
   artworkUrl,
+  videoId,
+  variant = "album",
   title,
   subtitle,
   subtitleContent,
@@ -37,8 +41,9 @@ export function AlbumCard({
         <TrackArtwork
           className={styles.artwork}
           artworkUrl={artworkUrl}
+          videoId={videoId}
           iconSize={48}
-          variant="album"
+          variant={variant}
         />
         <div className={styles.playOverlay}>
           <IconPlayerPlay size={32} className={styles.playIcon} />

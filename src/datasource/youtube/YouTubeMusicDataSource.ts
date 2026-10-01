@@ -9,6 +9,7 @@ import type {
   ArtistPage,
   ArtistReference,
   AuthPrompt,
+  CreatePlaylistInput,
   LibrarySnapshot,
   Lyrics,
   Playlist,
@@ -1777,9 +1778,9 @@ export class YouTubeMusicDataSource extends DataSource {
 
     return selectArtworkUrl(
       detailHeader?.thumbnails,
-      detailHeader?.thumbnail?.contents,
+      collectArtworkCandidates(detailHeader?.thumbnail),
       responsiveHeader?.thumbnails,
-      responsiveHeader?.thumbnail?.contents,
+      collectArtworkCandidates(responsiveHeader?.thumbnail),
     );
   }
 
@@ -1825,6 +1826,10 @@ export class YouTubeMusicDataSource extends DataSource {
   }
 
   private async getCreatedPlaylists(client: Innertube, playlistLibrary: unknown): Promise<Playlist[]> {
+    const cachedLibrary = await getCachedJson<LibrarySnapshot>(LIBRARY_CACHE_KEY);
+    const cachedById = new Map((cachedLibrary?.playlists ?? []).map((playlist) => [
+      this.normalizePlaylistId(playlist.id), playlist,
+    ]));
     const playlistItems = this.collectMusicItems(playlistLibrary, new Set(["playlist"]));
     const playlists = this.uniqueById(
       playlistItems
@@ -1844,10 +1849,28 @@ export class YouTubeMusicDataSource extends DataSource {
       while (queue.length > 0) {
         const playlist = queue.shift();
         if (!playlist) return;
+        const cachedPlaylist = cachedById.get(this.normalizePlaylistId(playlist.id));
+        playlist.description = cachedPlaylist?.description;
+        playlist.privacy = cachedPlaylist?.privacy;
 
         for (const browseId of this.getPlaylistBrowseIds(playlist.id)) {
           try {
             const response = await this.executeMusicBrowse(client, { browseId });
+            const parsed = response as ParsedMusicResponse;
+            const detailHeader = parsed.contents_memo?.getType(YTNodes.MusicDetailHeader)?.[0] as unknown as
+              YTNodes.MusicDetailHeader | undefined;
+            const responsiveHeader = parsed.contents_memo?.getType(YTNodes.MusicResponsiveHeader)?.[0] as unknown as
+              YTNodes.MusicResponsiveHeader | undefined;
+            const description = detailHeader?.description?.toString()
+              ?? responsiveHeader?.description?.description?.toString();
+            if (description !== undefined) playlist.description = description;
+            // Saved playlists may not be editable; hydrate their covers too.
+            if (!playlist.artworkUrl) {
+              playlist.artworkUrl = this.getAlbumHeaderArtwork(response)
+                ?? this.collectMusicItems(response, new Set(["song", "video"]))
+                  .map((item) => this.toTrack(item)?.artworkUrl)
+                  .find((url) => Boolean(url));
+            }
             const editablePlaylistId = this.findEditablePlaylistId(response);
             if (!editablePlaylistId) continue;
 
@@ -1856,9 +1879,6 @@ export class YouTubeMusicDataSource extends DataSource {
             if (normalizedEditableId !== normalizedPlaylistId) continue;
 
             createdPlaylistIds.add(playlist.id);
-            if (!playlist.artworkUrl) {
-              playlist.artworkUrl = this.getAlbumHeaderArtwork(response);
-            }
             break;
           } catch (error) {
             logInternalWarn("YouTubeMusicDataSource.getCreatedPlaylists playlist failed", {
@@ -3095,6 +3115,56 @@ export class YouTubeMusicDataSource extends DataSource {
   private async fetchPlaylistTracksFresh(playlist: Playlist): Promise<Track[]> {
     const client = await this.getMusicClient();
     return this.collectPlaylistTracksWithEmptyRetries(client, playlist.id, "fresh-load");
+  }
+
+  async createPlaylist(input: CreatePlaylistInput): Promise<Playlist> {
+    if (!this.musicCookie) {
+      throw new Error("Sign in to YouTube Music before creating a playlist.");
+    }
+    const title = input.title.trim();
+    const description = input.description?.trim() ?? "";
+    if (!title || title.length > 150) {
+      throw new Error("Enter a playlist name between 1 and 150 characters.");
+    }
+    if (description.length > 5000) throw new Error("The description is too long.");
+    if (!["PRIVATE", "UNLISTED", "PUBLIC"].includes(input.privacy)) {
+      throw new Error("Choose a valid privacy setting.");
+    }
+    if (input.initialTrack && input.initialTrack.source !== "youtube") {
+      throw new Error("Only YouTube Music songs can be added when creating a playlist.");
+    }
+    const client = await this.getMusicClient();
+    // Submit the first song in the same request to avoid a partial create/add.
+    const response = await client.actions.execute("playlist/create", {
+      title,
+      description,
+      privacyStatus: input.privacy,
+      videoIds: input.initialTrack ? [input.initialTrack.id] : [],
+    });
+    const playlistId = response.data?.playlistId;
+    if (!response.success || typeof playlistId !== "string" || !playlistId) {
+      throw new Error("YouTube Music did not confirm playlist creation. Check your library before trying again.");
+    }
+    const playlist: Playlist = {
+      id: playlistId,
+      title,
+      description,
+      privacy: input.privacy,
+      owner: this.musicAccountName,
+      artworkUrl: input.initialTrack?.artworkUrl,
+      kind: "playlist",
+      isSaved: true,
+      isEditable: true,
+    };
+    const library = await getCachedJson<LibrarySnapshot>(LIBRARY_CACHE_KEY);
+    if (library) {
+      await setCachedJson(LIBRARY_CACHE_KEY, {
+        ...library,
+        playlists: [playlist, ...library.playlists.filter((item) => item.id !== playlist.id)],
+      });
+    }
+    // Browse later to retrieve the real playlist-item ID used for removal.
+    return playlist;
   }
 
   async addTrackToPlaylist(

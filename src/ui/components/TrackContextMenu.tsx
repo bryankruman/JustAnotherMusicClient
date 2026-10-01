@@ -19,7 +19,7 @@ import {
   IconLoader2,
   IconMusicPlus,
   IconPlayerTrackNext,
-  IconPlaylist,
+  IconPlus,
   IconSearch,
   IconTrash,
   IconX,
@@ -33,6 +33,7 @@ import {
   usePlayerState,
 } from "../../player/playerStore";
 import { TrackArtwork } from "./TrackArtwork";
+import { CreatePlaylistDialog } from "./CreatePlaylistDialog";
 import styles from "./TrackContextMenu.module.css";
 import { isLocalPlaylist } from "../../player/localPlaylists";
 import { ArtistLinks } from "./ArtistLinks";
@@ -95,6 +96,7 @@ export function TrackContextMenuProvider({
     onRemove?: (track: Track) => void;
   } | null>(null);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedPlaylistIndex, setSelectedPlaylistIndex] = useState<number | null>(null);
   const [addingPlaylistId, setAddingPlaylistId] = useState<string | null>(null);
@@ -489,6 +491,7 @@ export function TrackContextMenuProvider({
               <TrackArtwork
                 className={styles.trackArtwork}
                 artworkUrl={track.artworkUrl}
+                videoId={track.source === "youtube" ? track.id : undefined}
                 iconSize={24}
                 loading="eager"
               />
@@ -526,6 +529,13 @@ export function TrackContextMenuProvider({
 
             {error && <p className={styles.error}>{error}</p>}
 
+            {libraryState.library && track.source === "youtube" && (
+              <button type="button" className={styles.createPlaylistButton} disabled={Boolean(addingPlaylistId)}
+                onClick={() => { setIsPickerOpen(false); setIsCreateOpen(true); }}>
+                <IconPlus size={18} aria-hidden="true" />Create new playlist
+              </button>
+            )}
+
             <div className={styles.playlistList}>
               {libraryState.status === "signed-out" ? (
                 <p className={styles.empty}>Sign in to YouTube Music to add songs.</p>
@@ -548,13 +558,8 @@ export function TrackContextMenuProvider({
                     onMouseMove={() => setSelectedPlaylistIndex(null)}
                     onClick={() => void addToPlaylist(playlist)}
                   >
-                    <span className={styles.playlistArtwork}>
-                      {playlist.artworkUrl ? (
-                        <img src={playlist.artworkUrl} alt="" />
-                      ) : (
-                        <IconPlaylist size={24} aria-hidden="true" />
-                      )}
-                    </span>
+                    <TrackArtwork className={styles.playlistArtwork}
+                      artworkUrl={playlist.artworkUrl} variant="playlist" />
                     <span className={styles.playlistText}>
                       <strong>{playlist.title}</strong>
                       <span>{playlist.owner}</span>
@@ -570,6 +575,12 @@ export function TrackContextMenuProvider({
         </div>
       )}
 
+      {isCreateOpen && track && <CreatePlaylistDialog libraryController={libraryController}
+        initialTrack={track} onClose={() => { setIsCreateOpen(false); setIsPickerOpen(true); }}
+        onCreated={(playlist) => {
+          setIsCreateOpen(false);
+          showToast(`Created ${playlist.title} and added song`);
+        }} />}
       {toast && (
         <div className={styles.toast} role="status">
           {addingPlaylistId || isRemovingTrack || isLikeMutationPending ? (

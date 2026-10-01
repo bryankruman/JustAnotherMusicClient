@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { logInternalError } from "../../internal/logging";
-import { isLinux } from "../platform";
+import { isLinux, isWindows } from "../platform";
 import {
   hydrateLocalBooleanSetting,
   readLocalBooleanSetting,
@@ -31,7 +31,7 @@ function subscribe(callback: () => void) {
 }
 
 function readWindowsStyleWindowControls() {
-  return readBooleanSetting(WINDOWS_STYLE_STORAGE_KEY);
+  return isWindows || readBooleanSetting(WINDOWS_STYLE_STORAGE_KEY);
 }
 
 function readNativeWindowControls() {
@@ -43,7 +43,7 @@ function emitWindowControlsChange() {
 }
 
 export function setWindowsStyleWindowControls(enabled: boolean) {
-  writeBooleanSetting(WINDOWS_STYLE_STORAGE_KEY, enabled);
+  writeBooleanSetting(WINDOWS_STYLE_STORAGE_KEY, isWindows || enabled);
 }
 
 export function setNativeWindowControls(enabled: boolean) {
@@ -65,7 +65,7 @@ export async function applyNativeWindowControls(enabled = readNativeWindowContro
 
 export async function hydrateWindowControlSettings() {
   await Promise.all([
-    hydrateLocalBooleanSetting(WINDOWS_STYLE_STORAGE_KEY, false, CHANGE_EVENT),
+    hydrateLocalBooleanSetting(WINDOWS_STYLE_STORAGE_KEY, isWindows, CHANGE_EVENT),
     hydrateLocalBooleanSetting(
       NATIVE_CONTROLS_STORAGE_KEY,
       isLinux,
@@ -76,7 +76,7 @@ export async function hydrateWindowControlSettings() {
 }
 
 export function useWindowsStyleWindowControls() {
-  return useSyncExternalStore(subscribe, readWindowsStyleWindowControls, () => false);
+  return useSyncExternalStore(subscribe, readWindowsStyleWindowControls, () => isWindows);
 }
 
 export function useNativeWindowControls() {

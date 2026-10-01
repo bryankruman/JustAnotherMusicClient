@@ -61,6 +61,7 @@ export function TrackInfo() {
         <TrackArtwork
           className={styles.albumArt}
           artworkUrl={currentTrack.artworkUrl}
+          videoId={currentTrack.source === "youtube" ? currentTrack.id : undefined}
           iconSize={28}
         />
       )}

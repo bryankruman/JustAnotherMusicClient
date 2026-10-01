@@ -211,6 +211,7 @@ export function HomePage({
             <AlbumCard
               key={track.id}
               artworkUrl={track.artworkUrl}
+              videoId={track.source === "youtube" ? track.id : undefined}
               title={track.title}
               subtitleContent={<ArtistLinks artists={track.artists} fallback={track.artist} />}
               onContextMenu={(event) => openTrackMenu(event, track)}
@@ -268,6 +269,7 @@ export function HomePage({
                 <TrackArtwork
                   className={styles.compactArtwork}
                   artworkUrl={track.artworkUrl}
+                  videoId={track.source === "youtube" ? track.id : undefined}
                   iconSize={24}
                 />
                 <span className={styles.compactText}>
@@ -291,6 +293,7 @@ export function HomePage({
               <AlbumCard
                 key={track.id}
                 artworkUrl={track.artworkUrl}
+                videoId={track.source === "youtube" ? track.id : undefined}
                 title={track.title}
                 subtitleContent={<ArtistLinks artists={track.artists} fallback={track.artist} />}
                 onContextMenu={(event) => openTrackMenu(event, track)}
@@ -309,6 +312,7 @@ export function HomePage({
               <AlbumCard
                 key={track.id}
                 artworkUrl={track.artworkUrl}
+                videoId={track.source === "youtube" ? track.id : undefined}
                 title={track.title}
                 subtitleContent={<ArtistLinks artists={track.artists} fallback={track.artist} />}
                 onContextMenu={(event) => openTrackMenu(event, track)}

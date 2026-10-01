@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { IconArrowsShuffle, IconMusic } from "@tabler/icons-react";
+import { IconArrowsShuffle } from "@tabler/icons-react";
 import type { Track } from "../../datasource/types";
 import styles from "./DiceCard.module.css";
+import { TrackArtwork } from "./TrackArtwork";
 
 interface DiceCardProps {
   tracks: Track[];
@@ -31,16 +32,13 @@ export function DiceCard({ tracks, isSpinning = false, onClick }: DiceCardProps)
       aria-label="Surprise me with a recommendation"
     >
       <div className={styles.cover}>
-        {preview?.artworkUrl ? (
-          <img
-            key={`${preview.id}-${previewIndex}`}
-            className={`${styles.artwork} ${isSpinning ? styles.spinning : ""}`}
-            src={preview.artworkUrl}
-            alt=""
-          />
-        ) : (
-          <IconMusic size={48} className={styles.fallbackIcon} />
-        )}
+        <TrackArtwork
+          key={`${preview?.id ?? "empty"}-${previewIndex}`}
+          className={`${styles.artwork} ${isSpinning ? styles.spinning : ""}`}
+          artworkUrl={preview?.artworkUrl}
+          videoId={preview?.source === "youtube" ? preview.id : undefined}
+          iconSize={48}
+        />
         <span className={styles.shuffleBadge}>
           <IconArrowsShuffle size={20} />
         </span>

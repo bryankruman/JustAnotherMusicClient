@@ -1283,6 +1283,7 @@ export default function App() {
     const handleShortcut = (event: KeyboardEvent) => {
       if (event.repeat) return;
       if (event.defaultPrevented) return;
+      if (event.target instanceof Element && event.target.closest('[role="dialog"]')) return;
       const textEntry = isTextEntry(event.target);
 
       if (!textEntry) {

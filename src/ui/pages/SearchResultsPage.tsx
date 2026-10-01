@@ -275,6 +275,7 @@ export function SearchResultsPage({
                       <TrackArtwork
                         className={styles.artwork}
                         artworkUrl={track.artworkUrl}
+                        videoId={track.source === "youtube" ? track.id : undefined}
                         iconSize={24}
                       />
                       <span className={styles.text}>
@@ -339,6 +340,7 @@ export function SearchResultsPage({
                     >
                       <AlbumCard
                         artworkUrl={playlist.artworkUrl}
+                        variant="playlist"
                         title={playlist.title}
                         subtitle={playlist.owner}
                         onClick={() => onOpenPlaylist(playlist)}

@@ -17,6 +17,7 @@ import { shuffleTracks } from "../../player/shuffleTracks";
 import { useTrackContextMenu } from "../components/TrackContextMenu";
 import { isLocalPlaylist, reorderLocalPlaylistTracks } from "../../player/localPlaylists";
 import styles from "./AlbumView.module.css";
+import playlistStyles from "./PlaylistView.module.css";
 import { ArtistLinks } from "../components/ArtistLinks";
 import { usePlaylistContextMenu } from "../components/PlaylistContextMenu";
 import { TrackArtwork } from "../components/TrackArtwork";
@@ -434,17 +435,17 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
   return (
     <div className={styles.root}>
       <header
-        className={styles.header}
+        className={`${styles.header} ${playlistStyles.header}`}
         onContextMenu={(event) => openPlaylistMenu(event, playlist)}
       >
         {playlist.kind === "liked-songs" || playlist.id === "LM" ? (
-          <div className={`${styles.cover} ${styles.coverFrame}`}>
+          <div className={`${styles.cover} ${styles.coverFrame} ${playlistStyles.cover}`}>
             <IconHeart size={80} stroke={1.6} aria-hidden="true" />
           </div>
         ) : (
           <TrackArtwork
-            className={`${styles.cover} ${styles.coverFrame}`}
-            artworkUrl={playlist.artworkUrl}
+            className={`${styles.cover} ${styles.coverFrame} ${playlistStyles.cover}`}
+            artworkUrl={playlist.artworkUrl ?? tracks.find((track) => track.artworkUrl)?.artworkUrl}
             iconSize={80}
             loading="eager"
             variant="playlist"
@@ -452,10 +453,20 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
         )}
         <div className={styles.headerText}>
           <span className={styles.eyebrow}>Playlist</span>
-          <h1 className={styles.title}>{playlist.title}</h1>
+          <h1 className={`${styles.title} ${playlistStyles.title}`}>{playlist.title}</h1>
           <p className={styles.artist}>{playlist.owner}</p>
+          {playlist.description && <p className={playlistStyles.description}>{playlist.description}</p>}
+          {!isLoading && !error && <p className={playlistStyles.metadata}>
+            {tracks.length}{hasMoreTracks ? "+" : ""} {tracks.length === 1 && !hasMoreTracks ? "song" : "songs"}
+            {playlist.privacy && ` · ${playlist.privacy.charAt(0)}${playlist.privacy.slice(1).toLowerCase()}`}
+          </p>}
         </div>
-        <div className={styles.headerActions}>
+        <div className={`${styles.headerActions} ${playlistStyles.actions}`}>
+          <button className={styles.shuffleButton} type="button"
+            disabled={isLoading || Boolean(error) || visibleTracks.length === 0}
+            onClick={() => { if (visibleTracks[0]) void playPlaylistTrack(visibleTracks[0]); }}>
+            <IconPlayerPlay size={18} aria-hidden="true" /><span>Play</span>
+          </button>
           <PlaylistDownloadButton
             playlist={playlist}
             tracks={tracks}
@@ -476,7 +487,14 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
       {isLoading && <PlaylistLoadingSpinner label="Loading songs" />}
       {error && <p className={styles.message}>{error}</p>}
       {!isLoading && !error && !hasMoreTracks && tracks.length === 0 && (
-        <p className={styles.message}>This playlist is empty.</p>
+        <div className={playlistStyles.empty}>
+          <p>Your playlist starts here</p>
+          <span>{isLocalPlaylistView
+            ? "Add a music folder to this playlist in Settings → Local playlists."
+            : playlist.kind === "liked-songs" || playlist.id === "LM"
+              ? "Like a song to find it here."
+              : "Search for a song, right-click it, and choose Add to playlist."}</span>
+        </div>
       )}
       {!isLoading && !error && (tracks.length > 0 || hasMoreTracks) && (
         <>
@@ -565,7 +583,7 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
                 <button
                   key={getTrackRenderKey(track, index)}
                   data-playlist-track-path={trackPath}
-                  className={`${styles.track} ${
+                  className={`${styles.track} ${playlistStyles.trackWithArtwork} ${
                     enteringTrackDelayIndexes.has(trackKey) ? styles.trackEntering : ""
                   }`}
                   style={{
@@ -616,6 +634,8 @@ export function PlaylistView({ playlist, playerController, libraryController }: 
                     />
                   )}
                   <span className={styles.trackIndex}>{index + 1}</span>
+                  <TrackArtwork className={playlistStyles.trackArtwork} artworkUrl={track.artworkUrl}
+                    videoId={track.source === "youtube" ? track.id : undefined} />
                   <span className={styles.trackText}>
                     <span className={styles.trackTitle}>{track.title}</span>
                     <ArtistLinks

@@ -1,0 +1,32 @@
+.header { display: grid; grid-template-columns: 160px minmax(0, 1fr); align-items: end; }
+.cover { width: 160px; height: 160px; }
+.title { overflow-wrap: anywhere; }
+.actions { grid-column: 1 / -1; margin-left: 0; flex-wrap: wrap; }
+.description {
+  margin: 12px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.metadata { margin: 12px 0 0; color: var(--color-text-secondary); font-size: 13px; }
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 180px;
+  padding: 24px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 16px;
+  background: var(--color-bg-subtle);
+  text-align: center;
+}
+.empty p { margin: 0; color: var(--color-text-primary); font-size: 20px; font-weight: 600; }
+.empty span { color: var(--color-text-secondary); font-size: 14px; line-height: 1.5; }
+.trackWithArtwork { grid-template-columns: 24px 42px minmax(0, 1fr) 28px 24px; }
+.trackArtwork { width: 42px; height: 42px; border-radius: 7px; }

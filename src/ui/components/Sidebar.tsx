@@ -4,6 +4,7 @@ import {
   IconFolder,
   IconHeart,
   IconPlaylist,
+  IconPlus,
   IconRefresh,
 } from "@tabler/icons-react";
 import type { Album, Playlist } from "../../datasource/types";
@@ -21,6 +22,7 @@ import styles from "./Sidebar.module.css";
 import { ArtistLinks } from "./ArtistLinks";
 import { TrackArtwork } from "./TrackArtwork";
 import { usePlaylistContextMenu } from "./PlaylistContextMenu";
+import { CreatePlaylistDialog } from "./CreatePlaylistDialog";
  
 const PLAYLIST_ORDER_KEY = "ytc-sidebar-playlist-order";
 const ALBUM_ORDER_KEY = "ytc-sidebar-album-order";
@@ -163,6 +165,7 @@ export function Sidebar({
   const libraryState = useLibraryState();
   const { openPlaylistMenu, openAlbumMenu } = usePlaylistContextMenu();
   const [libraryView, setLibraryView] = useState<LibraryView>("playlists");
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [recentPlaylistsRevision, setRecentPlaylistsRevision] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [playlistOrder, setPlaylistOrder] = useState<string[]>(() =>
@@ -708,6 +711,13 @@ export function Sidebar({
             {!shouldHideText && <span>Albums</span>}
           </button>
         </div>
+        {libraryView === "playlists" && (
+          <button type="button" className={styles.createPlaylistButton}
+            aria-label="Create playlist" title="Create playlist" onClick={() => setIsCreateOpen(true)}>
+            <IconPlus size={18} aria-hidden="true" />
+            {!shouldHideText && <span>Create playlist</span>}
+          </button>
+        )}
         <div ref={listRef} className={listClasses}>
           {libraryView === "albums" ? (
             albums.map((album) => (
@@ -833,6 +843,11 @@ export function Sidebar({
           )}
         </div>
       </div>
+      {isCreateOpen && <CreatePlaylistDialog libraryController={libraryController}
+        onClose={() => setIsCreateOpen(false)} onCreated={(playlist) => {
+          setIsCreateOpen(false);
+          onNavigatePlaylist(playlist);
+        }} />}
     </div>
   );
 }

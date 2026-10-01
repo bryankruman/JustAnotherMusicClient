@@ -136,7 +136,7 @@ import {
   useDownloaderState,
 } from "../../plugins/official/downloader/downloaderStore";
 import { DOWNLOADER_PLUGIN_ID } from "../../plugins/official/downloader/manifest";
-import { isLinux } from "../platform";
+import { isLinux, isWindows } from "../platform";
 import { GITHUB_REPOSITORY_URL } from "../errors/errorManager";
 import {
   fetchInstalledReleaseChangelog,
@@ -1713,13 +1713,15 @@ export function SettingsPage({
             <label className={styles.toggleRow}>
               <span className={styles.toggleDescription}>
                 <strong>Windows-style controls</strong>
-                <span>Use minimize, maximize, and close buttons with square edges.</span>
+                <span>{isWindows
+                  ? "Windows-style controls are always used on Windows."
+                  : "Use minimize, maximize, and close buttons with square edges."}</span>
               </span>
               <input
                 className={styles.toggleInput}
                 type="checkbox"
                 checked={windowsStyleWindowControls}
-                disabled={nativeWindowControls}
+                disabled={nativeWindowControls || isWindows}
                 onChange={(event) => setWindowsStyleWindowControls(event.target.checked)}
               />
               <span className={styles.toggle} aria-hidden="true" />
