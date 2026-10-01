@@ -4,6 +4,7 @@ import { DataSource, type StreamData } from "../DataSource";
 import type { Track } from "../types";
 import { selectArtworkUrl } from "./artwork";
 import { tauriFetch } from "./tauriFetch";
+import { evaluatePlayerScript } from "./isolatedPlayerScript";
 
 type MaybeInfo = {
   basic_info?: {
@@ -96,18 +97,7 @@ export class YouTubeDataSource extends DataSource {
           outputLength: data.output?.length || 0,
         });
         
-        const properties: string[] = [];
-        
-        if (env.n) {
-          properties.push(`n: exportedVars.nFunction("${env.n}")`);
-        }
-        
-        if (env.sig) {
-          properties.push(`sig: exportedVars.sigFunction("${env.sig}")`);
-        }
-        
-        const code = `${data.output}\nreturn { ${properties.join(', ')} }`;
-        const result = new Function(code)();
+        const result = await evaluatePlayerScript(data.output);
         
         logInternalDebug("YouTubeDataSource.javascript_evaluator result", {
           resultType: typeof result,
@@ -150,7 +140,7 @@ export class YouTubeDataSource extends DataSource {
         hasSignal: Boolean(init?.signal),
         timestamp: new Date().toISOString(),
         userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
-        hasCookies: typeof document !== "undefined" && document.cookie.length > 0,
+        hasCookies: false,
       });
       
       const startTime = Date.now();
@@ -197,8 +187,8 @@ export class YouTubeDataSource extends DataSource {
       fetch_function: typeof window !== 'undefined' ? window.fetch.bind(window) : undefined,
       // Use the embedded WebView UA when available (Tauri dev/prod).
       user_agent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
-      // Add session options for authentication-bound requests
-      cookie: typeof document !== "undefined" ? document.cookie : undefined,
+      // The anonymous source never reads localhost cookies as YouTube credentials.
+      cookie: undefined,
       // Enable player retrieval for better compatibility
       retrieve_player: true,
       // Add PO token support for better authentication

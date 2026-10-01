@@ -28,6 +28,7 @@ import {
   IconUser,
 } from "@tabler/icons-react";
 import { invoke } from "@tauri-apps/api/core";
+import { LikedDatesSettings } from "../components/LikedDatesSettings";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -35,9 +36,7 @@ import {
   checkForUpdates,
   getUpdateFailureMessage,
   getInstalledVersion,
-  installUpdate,
   type UpdateInfo,
-  type UpdateInstallProgress,
 } from "../../internal/updateChecker";
 import {
   clearCache,
@@ -136,7 +135,7 @@ import {
   useDownloaderState,
 } from "../../plugins/official/downloader/downloaderStore";
 import { DOWNLOADER_PLUGIN_ID } from "../../plugins/official/downloader/manifest";
-import { isLinux } from "../platform";
+import { isLinux, isWindows } from "../platform";
 import { GITHUB_REPOSITORY_URL } from "../errors/errorManager";
 import {
   fetchInstalledReleaseChangelog,
@@ -284,9 +283,8 @@ export function SettingsPage({
   const [installedVersion, setInstalledVersion] = useState<string | null>(null);
   const [updateResult, setUpdateResult] = useState<UpdateInfo | null>(null);
   const [updateStatus, setUpdateStatus] = useState<
-    "idle" | "checking" | "installing" | "current" | "error"
+    "idle" | "checking" | "current" | "error"
   >("idle");
-  const [updateProgress, setUpdateProgress] = useState<UpdateInstallProgress | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [releaseChangelog, setReleaseChangelog] = useState<ReleaseChangelog | null>(null);
   const [releaseChangelogLoading, setReleaseChangelogLoading] = useState(false);
@@ -403,25 +401,12 @@ export function SettingsPage({
     setUpdateStatus("checking");
     setUpdateResult(null);
     setUpdateError(null);
-    setUpdateProgress(null);
     try {
       const update = await checkForUpdates();
       setUpdateResult(update);
       setUpdateStatus(update ? "idle" : "current");
     } catch (error) {
       setUpdateError(getUpdateFailureMessage(error));
-      setUpdateStatus("error");
-    }
-  };
-
-  const handleInstallUpdate = async () => {
-    if (!updateResult) return;
-    setUpdateStatus("installing");
-    setUpdateError(null);
-    try {
-      await installUpdate(updateResult, setUpdateProgress);
-    } catch {
-      setUpdateError("Unable to install the update. You can download it from GitHub.");
       setUpdateStatus("error");
     }
   };
@@ -478,9 +463,9 @@ export function SettingsPage({
     setLogOpening(true);
     setLogError(null);
     try {
-      await invoke("open_current_log");
+      await invoke("open_log_folder");
     } catch {
-      setLogError("Unable to open the log file.");
+      setLogError("Unable to open the log folder.");
     } finally {
       setLogOpening(false);
     }
@@ -598,15 +583,20 @@ export function SettingsPage({
     }
   };
 
-  const handleAddLocalPlaylistPath = (playlistId: string) => {
+  const handleAddLocalPlaylistPath = async (playlistId: string) => {
     setLocalPlaylistError(null);
     const path = localPlaylistPathInputs[playlistId]?.trim() ?? "";
     if (!path) {
       setLocalPlaylistError("Enter a folder path before adding it.");
       return;
     }
-    addLocalPlaylistPath(playlistId, path);
-    setLocalPlaylistPathInputs((current) => ({ ...current, [playlistId]: "" }));
+    try {
+      const approvedPath = await invoke<string>("local_music_folder_validate", { path });
+      addLocalPlaylistPath(playlistId, approvedPath);
+      setLocalPlaylistPathInputs((current) => ({ ...current, [playlistId]: "" }));
+    } catch {
+      setLocalPlaylistError("Music folders must be inside your system Music directory.");
+    }
   };
 
   const handleBrowseLocalPlaylistPath = async (playlistId: string) => {
@@ -619,13 +609,14 @@ export function SettingsPage({
         title: "Choose music folder",
       });
       if (typeof selected !== "string") return;
-      addLocalPlaylistPath(playlistId, selected);
+      const approvedPath = await invoke<string>("local_music_folder_validate", { path: selected });
+      addLocalPlaylistPath(playlistId, approvedPath);
       setLocalPlaylistPathInputs((current) => ({
         ...current,
         [playlistId]: "",
       }));
     } catch {
-      setLocalPlaylistError("Unable to open the folder picker.");
+      setLocalPlaylistError("Choose a folder inside your system Music directory.");
     } finally {
       setLocalPlaylistBrowsingId(null);
     }
@@ -650,9 +641,12 @@ export function SettingsPage({
         multiple: false,
         title: "Choose download folder",
       });
-      if (typeof selected === "string") await setDownloadPath(selected);
+      if (typeof selected === "string") {
+        const approvedFolder = await invoke<string>("download_folder_validate", { folder: selected });
+        await setDownloadPath(approvedFolder);
+      }
     } catch {
-      setPluginError("Unable to choose a download folder.");
+      setPluginError("Choose a folder inside Music/Just Another Music Client.");
     } finally {
       setPluginBusy(false);
     }
@@ -675,14 +669,7 @@ export function SettingsPage({
     setShowCustomThemeWarning(false);
     setThemeImporting(true);
     try {
-      const selected = await openDialog({
-        directory: false,
-        multiple: false,
-        title: "Choose custom CSS theme",
-        filters: [{ name: "CSS", extensions: ["css"] }],
-      });
-      if (typeof selected !== "string") return;
-      await importCustomThemeCss(selected);
+      await importCustomThemeCss();
     } catch (error) {
       setThemeError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -859,6 +846,28 @@ export function SettingsPage({
 
             {libraryState.error && <p className={styles.error}>{libraryState.error}</p>}
 
+            {!isSignedIn && (
+              <details>
+                <summary>Windows: import a browser session if sign-in fails</summary>
+                <p>Use a disposable account only while this build is being tested. A session header grants account access: never paste it into chat, a file, or this app's interface.</p>
+                <p>Before copying, turn off Windows clipboard history and cross-device clipboard sync. If history was enabled when you copied, remove that entry from clipboard history afterward.</p>
+                <ol>
+                  <li>Open a private Edge or Chrome window, visit music.youtube.com, and sign in with your test account.</li>
+                  <li>Press F12, select Network, then reload the page. Select the music.youtube.com document request and expand Headers → Request Headers.</li>
+                  <li>Right-click the Cookie request header and choose Copy value (not all headers or a response Set-Cookie header). Close the private browser window without signing out.</li>
+                  <li>Click Import from clipboard below and approve the native confirmation. The backend clears the current clipboard, checks the session with YouTube Music, and stores it in Windows Credential Manager. If import fails, copy a fresh header and retry.</li>
+                </ol>
+                <button
+                  className={styles.signInButton}
+                  type="button"
+                  disabled={authBusy}
+                  onClick={() => void libraryController.importBrowserSession()}
+                >
+                  {authBusy ? "Connecting..." : "Import from clipboard"}
+                </button>
+              </details>
+            )}
+
             <div className={styles.settingsList}>
               <label className={`${styles.settingRow} ${!isSignedIn ? styles.toggleRowDisabled : ""}`}>
                 <span className={styles.toggleDescription}>
@@ -901,6 +910,8 @@ export function SettingsPage({
               </div>
             </div>
           </section>
+
+          <LikedDatesSettings signedIn={Boolean(isSignedIn)} />
 
           <section className={styles.card} aria-labelledby="lastfm-settings-title">
             <div className={styles.cardHeader}>
@@ -1056,28 +1067,14 @@ export function SettingsPage({
               {updateResult && (
                 <div className={styles.updateResult}>
                   <span>
-                    {updateStatus === "installing"
-                      ? updateProgress?.percent !== undefined
-                        ? `Downloading version ${updateResult.version}: ${updateProgress.percent}%`
-                        : `Preparing version ${updateResult.version}...`
-                      : `Version ${updateResult.version} is available.`}
+                    Version {updateResult.version} is available. Automatic installation is disabled.
                   </span>
-                  {updateResult.canInstall && (
-                    <button
-                      className={styles.githubButton}
-                      type="button"
-                      disabled={updateStatus === "installing"}
-                      onClick={() => void handleInstallUpdate()}
-                    >
-                      {updateStatus === "installing" ? "Installing..." : "Install"}
-                    </button>
-                  )}
                   <button
                     className={styles.secondaryButton}
                     type="button"
                     onClick={() => void openUrl(updateResult.releaseUrl)}
                   >
-                    {updateResult.canInstall ? "View changes" : "Download"}
+                    View release
                   </button>
                 </div>
               )}
@@ -1166,7 +1163,7 @@ export function SettingsPage({
                 <div className={styles.localPlaylistHeader}>
                   <span className={styles.toggleDescription}>
                     <strong>Local playlists</strong>
-                    <span>Create playlists from folders on this computer.</span>
+                    <span>Create playlists from folders inside your system Music directory.</span>
                   </span>
                   <div className={styles.localPlaylistCreate}>
                     <input
@@ -1223,7 +1220,7 @@ export function SettingsPage({
                                 [playlist.id]: event.target.value,
                               }))}
                               onKeyDown={(event) => {
-                                if (event.key === "Enter") handleAddLocalPlaylistPath(playlist.id);
+                                if (event.key === "Enter") void handleAddLocalPlaylistPath(playlist.id);
                               }}
                             />
                             <button
@@ -1240,7 +1237,7 @@ export function SettingsPage({
                           <button
                             className={styles.secondaryButton}
                             type="button"
-                            onClick={() => handleAddLocalPlaylistPath(playlist.id)}
+                            onClick={() => void handleAddLocalPlaylistPath(playlist.id)}
                           >
                             Add
                           </button>
@@ -1273,7 +1270,7 @@ export function SettingsPage({
               <div className={styles.actionRow}>
                 <span className={styles.toggleDescription}>
                   <strong>Application log</strong>
-                  <span>Open the current log file for sharing or troubleshooting.</span>
+                  <span>Open the private log folder with the current and three previous sessions.</span>
                 </span>
                 <button
                   className={styles.secondaryButton}
@@ -1282,7 +1279,7 @@ export function SettingsPage({
                   onClick={() => void handleOpenLog()}
                 >
                   <IconFileDescription size={18} />
-                  {logOpening ? "Opening..." : "Open log"}
+                  {logOpening ? "Opening..." : "Open logs"}
                 </button>
               </div>
 
@@ -1413,7 +1410,7 @@ export function SettingsPage({
                       <div className={styles.actionRow}>
                         <span className={styles.toggleDescription}>
                           <strong>Download folder</strong>
-                          <span>{downloaderState.settings.downloadPath ?? "Music\\Just Another Music Client\\Downloads"}</span>
+                          <span>{downloaderState.settings.downloadPath ?? "Music\\Just Another Music Client\\Downloads"} (inside Music/Just Another Music Client)</span>
                         </span>
                         <button
                           className={styles.secondaryButton}
@@ -1713,13 +1710,13 @@ export function SettingsPage({
             <label className={styles.toggleRow}>
               <span className={styles.toggleDescription}>
                 <strong>Windows-style controls</strong>
-                <span>Use minimize, maximize, and close buttons with square edges.</span>
+                <span>{isWindows ? "Windows uses minimize, maximize, restore, and close buttons with square edges." : "Use minimize, maximize, restore, and close buttons with square edges."}</span>
               </span>
               <input
                 className={styles.toggleInput}
                 type="checkbox"
                 checked={windowsStyleWindowControls}
-                disabled={nativeWindowControls}
+                disabled={nativeWindowControls || isWindows}
                 onChange={(event) => setWindowsStyleWindowControls(event.target.checked)}
               />
               <span className={styles.toggle} aria-hidden="true" />

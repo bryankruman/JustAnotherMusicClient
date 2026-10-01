@@ -204,15 +204,7 @@ function clearLocalOnboardingComplete(): void {
 }
 
 async function hasStoredYoutubeSession(): Promise<boolean> {
-  const [credentials, cookie] = await Promise.allSettled([
-    invoke<string | null>("load_youtube_credentials"),
-    invoke<string | null>("load_youtube_music_cookie"),
-  ]);
-
-  return (
-    credentials.status === "fulfilled" && credentials.value !== null
-    || cookie.status === "fulfilled" && cookie.value !== null
-  );
+  return invoke<boolean>("youtube_music_session_status");
 }
 
 export default function App() {
@@ -682,6 +674,8 @@ export default function App() {
   }, [persistAppSession]);
 
   const handleDeleteAllAppData = useCallback(async () => {
+    // A declined startup change must not leave the other stored data erased.
+    await setAutostartEnabled(false);
     sessionPersistenceDisabledRef.current = true;
     playerUIStore.setLyricsOpen(false);
     setIsSearchOpen(false);
@@ -701,7 +695,6 @@ export default function App() {
     clearAppSession();
 
     const results = await Promise.allSettled([
-      setAutostartEnabled(false),
       libraryController.signOut(),
       clearCache(),
       clearAppSettings(),

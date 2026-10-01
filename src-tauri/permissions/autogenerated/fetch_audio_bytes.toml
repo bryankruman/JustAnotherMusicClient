@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fetch-audio-bytes"
+description = "Enables the fetch_audio_bytes command without any pre-configured scope."
+commands.allow = ["fetch_audio_bytes"]
+
+[[permission]]
+identifier = "deny-fetch-audio-bytes"
+description = "Denies the fetch_audio_bytes command without any pre-configured scope."
+commands.deny = ["fetch_audio_bytes"]

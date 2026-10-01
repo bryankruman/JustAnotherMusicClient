@@ -13,6 +13,13 @@
   gap: 24px;
 }
 
+.timelineRoot { max-width: 1160px; }
+.listWithTimeline { display: grid; grid-template-columns: minmax(0, 1fr) 128px; gap: 24px; align-items: start; overflow-anchor: none; }
+.listWithTimeline > .trackList { min-width: 0; }
+@media (max-width: 700px) {
+  .listWithTimeline { grid-template-columns: minmax(0, 1fr) 84px; gap: 8px; }
+}
+
 .headerText {
   min-width: 0;
 }
@@ -370,7 +377,7 @@
   width: 100%;
   min-height: 58px;
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) 28px 24px;
+  grid-template-columns: 32px 40px minmax(0, 1fr) 28px 24px;
   align-items: center;
   gap: var(--spacing-md);
   border: 0;
@@ -385,6 +392,16 @@
 .trackEntering {
   animation: trackEnter 360ms var(--easing-smooth) both;
   animation-delay: var(--track-enter-delay, 0ms);
+}
+
+.trackArtwork {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+}
+
+.trackPlayIcon {
+  grid-column: -2;
 }
 
 .track:hover {
@@ -466,4 +483,30 @@
     width: auto;
     opacity: 1;
   }
+}
+
+.trackWithDate {
+  grid-template-columns: 32px 40px minmax(0, 1fr) 112px 28px 24px;
+}
+
+.trackAddedDate {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.trackAddedLabel {
+  display: block;
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+@media (max-width: 680px) {
+  .trackWithDate {
+    grid-template-columns: 24px 36px minmax(0, 1fr) 88px 20px 20px;
+    gap: 8px;
+    padding-inline: 4px;
+  }
+  .trackAddedDate { font-size: 11px; }
 }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-app-setting-remove"
+description = "Enables the app_setting_remove command without any pre-configured scope."
+commands.allow = ["app_setting_remove"]
+
+[[permission]]
+identifier = "deny-app-setting-remove"
+description = "Denies the app_setting_remove command without any pre-configured scope."
+commands.deny = ["app_setting_remove"]

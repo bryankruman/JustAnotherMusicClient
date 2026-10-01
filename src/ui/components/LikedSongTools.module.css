@@ -1,0 +1,34 @@
+.tools {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+.tools p { margin: 0; line-height: 1.6; }
+.controls, .checkStatus { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.controls label { display: flex; flex-direction: column; gap: 6px; }
+.tools input, .tools select, .tools button {
+  border: 1px solid var(--color-text-secondary);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--color-text-primary);
+  background: var(--color-bg);
+  font: inherit;
+  min-height: 36px;
+}
+.tools button { cursor: pointer; }
+.tools button:disabled { opacity: 0.5; cursor: default; }
+.tools button:hover:not(:disabled) { border-color: var(--color-accent); }
+.tools :is(input, select, button, summary):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.count { margin-left: auto; align-self: center; }
+.checkStatus { align-items: center; justify-content: space-between; }
+.history { border-top: 1px solid var(--color-text-secondary); padding-top: 14px; }
+.history summary { color: var(--color-text-primary); cursor: pointer; font-weight: 600; }
+.history[open] > :not(summary) { margin-top: 16px; }
+.records { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 18px; }
+.records li { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.song { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; flex: 1 1 240px; }
+.song strong { color: var(--color-text-primary); }
+.recordActions { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 560px) { .count { width: 100%; margin: 0; } .controls label { flex: 1 1 130px; } .tools input { min-width: 0; } }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fetch-audio-source"
+description = "Enables the fetch_audio_source command without any pre-configured scope."
+commands.allow = ["fetch_audio_source"]
+
+[[permission]]
+identifier = "deny-fetch-audio-source"
+description = "Denies the fetch_audio_source command without any pre-configured scope."
+commands.deny = ["fetch_audio_source"]

@@ -1,3 +1,4 @@
+import { hydrateLikedDates, invalidateLikedDate } from "../datasource/youtube/likedDates";
 import type { DataSource } from "../datasource/DataSource";
 import type {
   Album,
@@ -74,6 +75,7 @@ export class LibraryController {
       return this.initializationPromise;
     }
 
+    void hydrateLikedDates();
     this.initializationPromise = this.restoreSession();
     return this.initializationPromise;
   }
@@ -133,6 +135,18 @@ export class LibraryController {
       logInternalInfo("LibraryController.signIn refresh complete");
     } catch (error) {
       this.setFailure("YouTube Music sign-in failed.", error);
+    }
+  }
+
+  async importBrowserSession(): Promise<void> {
+    if (!this.dataSource.importBrowserSession || this.state.status === "authorizing") return;
+    this.setState({ status: "authorizing", authPrompt: null, error: null });
+    try {
+      await this.dataSource.importBrowserSession();
+      await this.refreshAfterSignIn();
+      logInternalInfo("LibraryController.importBrowserSession refresh complete");
+    } catch (error) {
+      this.setFailure("Browser-session import failed.", error);
     }
   }
 
@@ -434,6 +448,7 @@ export class LibraryController {
 
     try {
       await this.dataSource.setTrackLiked(track, liked);
+      void invalidateLikedDate(track.id);
     } catch (error) {
       this.setState({ library: previousLibrary });
       throw error;

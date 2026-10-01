@@ -1,60 +1,5 @@
 import { logInternalDebug, logInternalError, logInternalInfo, logInternalWarn } from "../internal/logging";
-
-type YouTubePlayerEvent = {
-  data: number;
-};
-
-type YouTubePlayer = {
-  cueVideoById(videoId: string): void;
-  loadVideoById(videoId: string): void;
-  playVideo(): void;
-  pauseVideo(): void;
-  stopVideo(): void;
-  seekTo(seconds: number, allowSeekAhead: boolean): void;
-  setVolume(volume: number): void;
-  getVolume(): number;
-  mute(): void;
-  unMute(): void;
-  isMuted(): boolean;
-  getCurrentTime(): number;
-  getDuration(): number;
-  getPlayerState(): number;
-  getVideoData(): { video_id?: string };
-  destroy(): void;
-};
-
-type YouTubePlayerConstructor = new (
-  element: HTMLElement,
-  options: {
-    width: number;
-    height: number;
-    videoId?: string;
-    playerVars: Record<string, number | string>;
-    events: {
-      onReady: () => void;
-      onStateChange: (event: YouTubePlayerEvent) => void;
-      onError: (event: YouTubePlayerEvent) => void;
-    };
-  },
-) => YouTubePlayer;
-
-declare global {
-  interface Window {
-    YT?: {
-      Player: YouTubePlayerConstructor;
-      PlayerState: {
-        UNSTARTED: number;
-        ENDED: number;
-        PLAYING: number;
-        PAUSED: number;
-        CUED: number;
-      };
-    };
-    onYouTubeIframeAPIReady?: () => void;
-  }
-}
-
-let iframeApiPromise: Promise<void> | null = null;
+import { createIsolatedYouTubePlayer, YOUTUBE_STATE, type IsolatedYouTubePlayer } from "./isolatedYouTubePlayer";
 const audioEngines = new Set<AudioEngine>();
 let playbackClaimId = 0;
 let playbackOwner: AudioEngine | null = null;
@@ -90,37 +35,10 @@ function detectAudioMimeType(bytes: Uint8Array): string {
   return "audio/mp4";
 }
 
-function allowYouTubeIframePlayback(host: HTMLElement): void {
-  const iframe = host.querySelector("iframe");
-  if (!iframe) return;
-  iframe.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture");
-}
-
-function loadYouTubeIframeApi(): Promise<void> {
-  if (window.YT?.Player) return Promise.resolve();
-  if (iframeApiPromise) return iframeApiPromise;
-
-  iframeApiPromise = new Promise((resolve, reject) => {
-    const previousReady = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => {
-      previousReady?.();
-      resolve();
-    };
-
-    const script = document.createElement("script");
-    script.src = "https://www.youtube.com/iframe_api";
-    script.async = true;
-    script.onerror = () => reject(new Error("Unable to load the YouTube player API."));
-    document.head.appendChild(script);
-  });
-
-  return iframeApiPromise;
-}
-
 export class AudioEngine {
   private readonly useNativeAudio = shouldUseNativeAudio();
-  private player: YouTubePlayer | null = null;
-  private playerPromise: Promise<YouTubePlayer> | null = null;
+  private player: IsolatedYouTubePlayer | null = null;
+  private playerPromise: Promise<IsolatedYouTubePlayer> | null = null;
   private audio: HTMLAudioElement | null = null;
   private audioObjectUrl: string | null = null;
   private currentVideoId: string | null = null;
@@ -168,7 +86,7 @@ export class AudioEngine {
     // A previous track may already have left the player in CUED. Wait for the
     // state event from this cue request instead of accepting that stale state.
     const cued = this.waitForPlayerState(
-      [window.YT!.PlayerState.CUED],
+      [YOUTUBE_STATE.CUED],
       15_000,
       false,
       videoId,
@@ -228,15 +146,15 @@ export class AudioEngine {
     player.setVolume(this.getOutputVolumePercent());
     const videoId = this.currentVideoId;
     const playing = this.waitForPlayerState(
-      [window.YT!.PlayerState.PLAYING],
+      [YOUTUBE_STATE.PLAYING],
       15_000,
       true,
       videoId,
     );
     const playerState = player.getPlayerState();
     if (
-      playerState === window.YT!.PlayerState.CUED
-      || playerState === window.YT!.PlayerState.UNSTARTED
+      playerState === YOUTUBE_STATE.CUED
+      || playerState === YOUTUBE_STATE.UNSTARTED
     ) {
       logInternalInfo("AudioEngine.play starting cued YouTube video", {
         videoId,
@@ -486,7 +404,7 @@ export class AudioEngine {
     }
   }
 
-  private async ensurePlayer(): Promise<YouTubePlayer> {
+  private async ensurePlayer(): Promise<IsolatedYouTubePlayer> {
     if (this.player) return this.player;
     if (this.playerPromise) return this.playerPromise;
 
@@ -518,79 +436,30 @@ export class AudioEngine {
     this.player?.pauseVideo();
   }
 
-  private async createPlayer(): Promise<YouTubePlayer> {
-    await loadYouTubeIframeApi();
-    if (!window.YT?.Player) {
-      throw new Error("YouTube player API loaded without a Player constructor.");
-    }
-
-    const host = document.createElement("div");
-    host.style.position = "fixed";
-    host.style.right = "0";
-    host.style.bottom = "0";
-    host.style.width = "200px";
-    host.style.height = "200px";
-    host.style.opacity = "0.01";
-    host.style.pointerEvents = "none";
-    host.style.zIndex = "0";
-    const target = document.createElement("div");
-    host.appendChild(target);
-    document.body.appendChild(host);
-
-    return new Promise((resolve, reject) => {
-      let player: YouTubePlayer;
-      const timeoutId = window.setTimeout(() => {
-        player?.destroy();
-        host.remove();
-        reject(new Error("Timed out while creating the YouTube player."));
-      }, 15_000);
-
-      player = new window.YT!.Player(target, {
-        width: 200,
-        height: 200,
-        playerVars: {
-          autoplay: 0,
-          controls: 0,
-          disablekb: 1,
-          enablejsapi: 1,
-          origin: window.location.origin,
-          playsinline: 1,
-          widget_referrer: "https://music.youtube.com/",
-        },
-        events: {
-          onReady: () => {
-            window.clearTimeout(timeoutId);
-            allowYouTubeIframePlayback(host);
-            player.setVolume(this.getOutputVolumePercent());
-            if (this.muted) {
-              player.mute();
-            } else {
-              player.unMute();
-            }
-            logInternalInfo("AudioEngine YouTube player ready");
-            resolve(player);
-          },
-          onStateChange: (event) => {
-            logInternalInfo("AudioEngine YouTube player state", {
-              state: event.data,
-              videoId: this.currentVideoId,
-              playerVideoId: player.getVideoData().video_id ?? null,
-            });
-            this.resolveStateWaiters(event.data, player.getVideoData().video_id ?? null);
-            if (event.data === window.YT!.PlayerState.ENDED) {
-              this.onEnded?.();
-            }
-          },
-          onError: (event) => {
-            const error = new Error(`YouTube player error ${event.data}`);
-            this.rejectStateWaiters(error);
-            logInternalError("AudioEngine YouTube player error", error, {
-              videoId: this.currentVideoId,
-            });
-          },
-        },
-      });
+  private async createPlayer(): Promise<IsolatedYouTubePlayer> {
+    const player = await createIsolatedYouTubePlayer({
+      onStateChange: (state, playerVideoId) => {
+        logInternalInfo("AudioEngine isolated YouTube player state", {
+          state,
+          videoId: this.currentVideoId,
+          playerVideoId,
+        });
+        this.resolveStateWaiters(state, playerVideoId);
+        if (state === YOUTUBE_STATE.ENDED) this.onEnded?.();
+      },
+      onError: (code) => {
+        const error = new Error(`YouTube player error ${code}`);
+        this.rejectStateWaiters(error);
+        logInternalError("AudioEngine isolated YouTube player error", error, {
+          videoId: this.currentVideoId,
+        });
+      },
     });
+    player.setVolume(this.getOutputVolumePercent());
+    if (this.muted) player.mute();
+    else player.unMute();
+    logInternalInfo("AudioEngine isolated YouTube player ready");
+    return player;
   }
 
   private waitForPlayerState(

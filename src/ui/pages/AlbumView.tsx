@@ -215,6 +215,7 @@ export function AlbumView({ album, playerController, libraryController }: AlbumV
                     onClick={() => void playerController.playTrackById(track.id, visibleTracks)}
                   >
                     <span className={styles.trackIndex}>{index + 1}</span>
+                    <TrackArtwork artworkUrl={track.artworkUrl ?? album.artworkUrl} className={styles.trackArtwork} iconSize={20} />
                     <span className={styles.trackText}>
                       <span className={styles.trackTitle}>{track.title}</span>
                       <ArtistLinks
@@ -223,7 +224,7 @@ export function AlbumView({ album, playerController, libraryController }: AlbumV
                         fallback={track.artist}
                       />
                     </span>
-                    <IconPlayerPlay size={18} />
+                    <IconPlayerPlay className={styles.trackPlayIcon} size={18} />
                   </button>
                 );
               })}

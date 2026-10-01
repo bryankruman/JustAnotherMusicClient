@@ -5,21 +5,23 @@ type ProxyHttpResponse = {
   status: number;
   headers: Record<string, string>;
   body_base64: string;
-  cookie?: string;
 };
 
 type TauriFetchInit = RequestInit & {
   timeoutMs?: number;
 };
 
-let liveCookie: string | null = null;
+// A fixed, nonsecret marker keeps YouTube.js in its signed-in request mode.
+// Rust replaces the marker with the real credential only for approved hosts.
+export const BACKEND_AUTH_MARKER = "SAPISID=backend-managed";
+let backendSessionActive = false;
 
-export function getLiveCookie(): string | null {
-  return liveCookie;
+export function getBackendSessionActive(): boolean {
+  return backendSessionActive;
 }
 
-export function setLiveCookie(cookie: string | null): void {
-  liveCookie = cookie;
+export function setBackendSessionActive(active: boolean): void {
+  backendSessionActive = active;
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -45,6 +47,11 @@ function normalizeUrl(input: RequestInfo | URL): string {
   return input.url;
 }
 
+function safeLogUrl(value: string): string {
+  const parsed = new URL(value);
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
 function getSafeHeaders(headers: Record<string, string>): Record<string, string> {
   return Object.fromEntries(
     Object.entries(headers).map(([key, value]) => {
@@ -53,6 +60,9 @@ function getSafeHeaders(headers: Record<string, string>): Record<string, string>
         normalizedKey === "authorization"
         || normalizedKey === "cookie"
         || normalizedKey === "set-cookie"
+        || normalizedKey === "location"
+        || normalizedKey === "referer"
+        || /token|visitor|identity|session|secret|api-key/.test(normalizedKey)
       ) {
         return [key, "[redacted]"];
       }
@@ -98,48 +108,6 @@ function getRequestUrl(inputUrl: string, headers: Record<string, string>): strin
   }
 
   return url.toString();
-}
-
-function getCookieValue(cookieHeader: string | undefined, name: string): string | null {
-  if (!cookieHeader) return null;
-  for (const part of cookieHeader.split(";")) {
-    const [cookieName, ...valueParts] = part.trim().split("=");
-    if (cookieName === name) return valueParts.join("=");
-  }
-  return null;
-}
-
-function getSapisidAuthCookie(cookieHeader: string | undefined): string | null {
-  return getCookieValue(cookieHeader, "SAPISID")
-    ?? getCookieValue(cookieHeader, "__Secure-1PAPISID")
-    ?? getCookieValue(cookieHeader, "__Secure-3PAPISID");
-}
-
-async function sha1Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(value));
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-async function applyCookieAuth(headers: Record<string, string>, requestUrl: string): Promise<void> {
-  const path = new URL(requestUrl).pathname;
-  const signable = path.startsWith("/youtubei/") || path.startsWith("/api/stats/");
-  if (!headers.cookie || !signable) return;
-
-  const origin = headers["x-youtube-client-name"] === "67"
-    ? "https://music.youtube.com"
-    : "https://www.youtube.com";
-  const sapisid = getSapisidAuthCookie(liveCookie ?? headers.cookie);
-  if (sapisid) {
-    const timestamp = Math.floor(Date.now() / 1000);
-    const hash = await sha1Hex(`${timestamp} ${sapisid} ${origin}`);
-    headers.authorization = `SAPISIDHASH ${timestamp}_${hash}`;
-    headers["x-goog-request-time"] = timestamp.toString();
-  }
-  headers.origin = origin;
-  headers["x-origin"] = origin;
-  headers.referer = `${origin}/`;
 }
 
 async function buildBodyBase64(input: RequestInfo | URL, init?: RequestInit): Promise<string | undefined> {
@@ -190,16 +158,29 @@ export async function tauriFetch(input: RequestInfo | URL, init?: TauriFetchInit
   requestHeaders.forEach((value, key) => {
     headers[key] = value;
   });
-  await applyCookieAuth(headers, normalizeUrl(input));
+  // Frontend code is never permitted to hand the proxy a credential value.
+  // Only an active, marker-bearing request asks Rust to add account auth.
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === "authorization" || key.toLowerCase() === "proxy-authorization") {
+      delete headers[key];
+    } else if (key.toLowerCase() === "cookie") {
+      if (backendSessionActive && headers[key] === BACKEND_AUTH_MARKER) {
+        headers[key] = BACKEND_AUTH_MARKER;
+      } else {
+        delete headers[key];
+      }
+    }
+  }
   const method =
     init?.method ??
     (typeof input !== "string" && !(input instanceof URL) ? input.method : "GET");
   const body_base64 = await buildBodyBase64(input, init);
   const url = getRequestUrl(normalizeUrl(input), headers);
+  const logUrl = safeLogUrl(url);
 
   logInternalInfo("tauriFetch.request", {
     method,
-    url,
+    url: logUrl,
     headerCount: Object.keys(headers).length,
     hasBody: Boolean(body_base64),
     headers: getSafeHeaders(headers),
@@ -223,21 +204,17 @@ export async function tauriFetch(input: RequestInfo | URL, init?: TauriFetchInit
       throw new Error("Tauri proxy_http_request returned undefined response");
     }
 
-    if (proxyResponse.cookie) {
-      liveCookie = proxyResponse.cookie;
-    }
-
     const bodyBytes = fromBase64(proxyResponse.body_base64);
     if (proxyResponse.status >= 400) {
       logInternalError("tauriFetch.http error", new Error(`HTTP ${proxyResponse.status}`), {
         method,
-        url,
-        responseBody: new TextDecoder().decode(bodyBytes).slice(0, 1000),
+        url: logUrl,
+        responseBytes: bodyBytes.byteLength,
       });
     }
     logInternalDebug("tauriFetch.response", {
       method,
-      url,
+      url: logUrl,
       status: proxyResponse.status,
       responseHeaderCount: Object.keys(proxyResponse.headers).length,
       responseHeaders: getSafeHeaders(proxyResponse.headers),
@@ -257,7 +234,7 @@ export async function tauriFetch(input: RequestInfo | URL, init?: TauriFetchInit
   } catch (error) {
     logInternalError("tauriFetch.invoke failed", error, {
       method,
-      url,
+      url: logUrl,
       durationMs: Math.round(performance.now() - startedAt),
     });
     throw error;

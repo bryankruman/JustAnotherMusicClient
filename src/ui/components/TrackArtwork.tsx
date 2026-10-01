@@ -46,6 +46,8 @@ export function TrackArtwork({
   const currentArtworkUrl = baseArtworkUrl
     ? getRetriedArtworkUrl(baseArtworkUrl, retryCount)
     : undefined;
+  // Match the URL instead of clearing loaded state in effects: cached images can
+  // fire onLoad before those effects run.
   const isArtworkLoaded = loadedArtworkUrl === currentArtworkUrl;
   const FallbackIcon =
     variant === "artist"
@@ -60,7 +62,6 @@ export function TrackArtwork({
     setArtworkIndex(0);
     setRetryCount(0);
     setProxiedArtworkUrl(null);
-    setLoadedArtworkUrl(null);
   }, [artworkUrl]);
 
   useEffect(() => () => {
@@ -71,7 +72,6 @@ export function TrackArtwork({
 
   useEffect(() => {
     setRetryCount(0);
-    setLoadedArtworkUrl(null);
   }, [baseArtworkUrl]);
 
   useEffect(() => {
@@ -117,6 +117,7 @@ export function TrackArtwork({
           src={currentArtworkUrl}
           alt=""
           loading={loading}
+          draggable={false}
           onLoad={() => setLoadedArtworkUrl(currentArtworkUrl)}
           onError={() => {
             setLoadedArtworkUrl(null);

@@ -48,7 +48,6 @@ export interface DownloaderState {
 type StreamResolver = (track: Track, quality: AudioQuality) => Promise<{
   url: string;
   mimeType: string;
-  cookie?: string;
 }>;
 
 type DownloadAudioSaveResult = {
@@ -402,7 +401,6 @@ async function pump(): Promise<void> {
           artist: track.artist,
           folder,
           mimeType: stream.mimeType,
-          cookie: stream.cookie,
         });
         const { [trackId]: _pending, ...pending } = state.pending;
         commitEntries({

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-liked-dates-disconnect"
+description = "Enables the liked_dates_disconnect command without any pre-configured scope."
+commands.allow = ["liked_dates_disconnect"]
+
+[[permission]]
+identifier = "deny-liked-dates-disconnect"
+description = "Denies the liked_dates_disconnect command without any pre-configured scope."
+commands.deny = ["liked_dates_disconnect"]

@@ -1,3 +1,6 @@
+import { disconnectLikedDates } from "./likedDates";
+import { collectPlaylistSnapshot, playlistItemVideoId } from "./playlistSnapshot";
+import { activateLikedHistory, beginLikedHistoryScan, deactivateLikedHistory, failLikedHistoryScan, finishLikedHistoryScan, noteLikedSongAction } from "./likedHistory";
 import { invoke } from "@tauri-apps/api/core";
 import { ClientType, Innertube, Platform, Types, YTNodes } from "youtubei.js";
 import { clearCache, getCachedJson, setCachedJson } from "../../internal/cache";
@@ -18,7 +21,8 @@ import type {
 } from "../types";
 import { collectArtworkCandidates, getVideoArtworkFallback, selectArtworkUrl } from "./artwork";
 import { mintPoToken } from "./poToken";
-import { getLiveCookie, setLiveCookie, tauriFetch } from "./tauriFetch";
+import { evaluatePlayerScript } from "./isolatedPlayerScript";
+import { BACKEND_AUTH_MARKER, getBackendSessionActive, setBackendSessionActive, tauriFetch } from "./tauriFetch";
 import {
   getStreamingQuality,
   selectFormatForQuality,
@@ -113,6 +117,7 @@ type MusicContinuation = {
 };
 
 type YouTubeMusicPlaylistPage = {
+  page?: unknown;
   items?: MusicItem[];
   contents?: MusicItem[];
   has_continuation?: boolean;
@@ -220,6 +225,7 @@ type RawToggleMenuServiceItemRenderer = {
 
 type AccountCandidate = {
   accountIndex: number;
+  historyId?: string;
   name?: string;
   artworkUrl?: string;
   onBehalfOfUser?: string;
@@ -342,11 +348,9 @@ export class YouTubeMusicDataSource extends DataSource {
   }
 
   private get musicCookie(): string | null {
-    return getLiveCookie();
-  }
-
-  private set musicCookie(cookie: string | null) {
-    setLiveCookie(cookie);
+    // YouTube.js requires a truthy cookie to enter its signed-in request mode.
+    // This is a fixed marker, never the real account cookie.
+    return getBackendSessionActive() ? BACKEND_AUTH_MARKER : null;
   }
 
   private setupJavaScriptEvaluator() {
@@ -356,7 +360,7 @@ export class YouTubeMusicDataSource extends DataSource {
         outputLength: data.output?.length ?? 0,
       });
 
-      return new Function(data.output)();
+      return evaluatePlayerScript(data.output);
     };
   }
 
@@ -364,7 +368,7 @@ export class YouTubeMusicDataSource extends DataSource {
     return {
       fetch: tauriFetch,
       user_agent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
-      cookie: this.musicCookie ?? (typeof document !== "undefined" ? document.cookie : undefined),
+      cookie: this.musicCookie ?? undefined,
       account_index: this.musicAccountIndex,
       on_behalf_of_user: this.musicOnBehalfOfUser ?? undefined,
       retrieve_player: retrievePlayer,
@@ -523,6 +527,10 @@ export class YouTubeMusicDataSource extends DataSource {
   }
 
   private resetMusicSessionSelection(): void {
+    deactivateLikedHistory();
+    this.likedScanPromise = null;
+    this.musicHistoryId = undefined;
+    ++this.likedSessionGeneration;
     try {
       localStorage.removeItem(SELECTED_ACCOUNT_STORAGE_KEY);
     } catch {
@@ -861,7 +869,7 @@ export class YouTubeMusicDataSource extends DataSource {
   }
 
   private toTrack(item: MusicItem): Track | null {
-    const id = item.id ?? item.endpoint?.payload?.videoId;
+    const id = playlistItemVideoId(item);
     const title = this.getTitle(item);
     if (!id || !title) return null;
     const viewCountText = this.getViewCountText(item);
@@ -1648,7 +1656,29 @@ export class YouTubeMusicDataSource extends DataSource {
     return tracks;
   }
 
-  private async collectPlaylistTracks(client: Innertube, playlistId: string): Promise<Track[]> {
+  private async collectPlaylistTracks(client: Innertube, playlistId: string, strict = false): Promise<Track[]> {
+    if (playlistId.replace(/^VL/, "") === LIKED_SONGS_PLAYLIST_ID) {
+      // This parser follows shelf continuations AND append-action pages, and
+      // sends YTMUSIC on every continuation (the generic browse walker did not).
+      const first = await client.music.getPlaylist(LIKED_SONGS_PLAYLIST_ID) as YouTubeMusicPlaylistPage;
+      let responseRowCount = 0;
+      return collectPlaylistSnapshot(first, (page) => {
+        const items = (page.items ?? page.contents ?? []).filter((item) =>
+          (item as MusicItem & { type?: string }).type !== "ContinuationItem");
+        responseRowCount += items.length;
+        // Deduplicate once across the complete snapshot, preserving accurate
+        // row counts for diagnosing differences from YouTube's displayed total.
+        const tracks = items.map((item) => this.toTrack(item)).filter((track): track is Track => Boolean(track));
+        const renderers = this.getRendererCounts(page.page);
+        const hasShelf = renderers.MusicPlaylistShelf || renderers.MusicPlaylistShelfContinuation;
+        const hasAppend = Boolean((page.page as { on_response_received_actions?: unknown[] })?.on_response_received_actions?.length)
+          && Array.isArray(page.contents);
+        if (this.getLibraryAuthFailureMessage(page.page, page.page) || (!tracks.length && !hasShelf && !hasAppend && !page.has_continuation)) {
+          throw new Error("The liked playlist response could not be verified. History has been kept.");
+        }
+        return tracks;
+      }, (counts) => logInternalInfo("YouTubeMusicDataSource.likedPlaylist complete", { ...counts, responseRowCount }));
+    }
     const browseId = playlistId.startsWith("VL") ? playlistId : `VL${playlistId}`;
     let page = await this.executeMusicBrowse(client, { browseId });
     let pageCount = 0;
@@ -1657,12 +1687,20 @@ export class YouTubeMusicDataSource extends DataSource {
 
     while (true) {
       const pageItems = this.collectMusicItems(page, new Set(["song", "video"]));
+      if (strict) {
+        const renderers = this.getRendererCounts(page);
+        const hasShelf = renderers.MusicPlaylistShelf || renderers.MusicPlaylistShelfContinuation;
+        if (this.getLibraryAuthFailureMessage(page, page) || (!pageItems.length && !hasShelf)) {
+          throw new Error("The liked playlist response could not be verified. History has been kept.");
+        }
+      }
       items.push(...pageItems);
       pageCount += 1;
 
       const continuation = this.getMusicContinuation(client, page);
       if (!continuation) break;
       if (seenContinuations.has(continuation.key)) {
+        if (strict) throw new Error("Liked playlist pagination repeated. History has been kept.");
         logInternalWarn("YouTubeMusicDataSource.collectPlaylistTracks repeated page", {
           playlistId,
           pageCount,
@@ -1672,6 +1710,7 @@ export class YouTubeMusicDataSource extends DataSource {
       }
 
       seenContinuations.add(continuation.key);
+      if (strict && pageCount >= 500) throw new Error("Liked playlist pagination did not finish. History has been kept.");
       page = await continuation.load();
     }
 
@@ -1879,11 +1918,56 @@ export class YouTubeMusicDataSource extends DataSource {
     }));
   }
 
+  private likedScanPromise: Promise<Track[]> | null = null;
+  private likedSessionGeneration = 0;
+  private musicHistoryId?: string;
+
+  private async scanLikedSongs(client: Innertube): Promise<Track[]> {
+    if (this.likedScanPromise) return this.likedScanPromise;
+    const sessionGeneration = this.likedSessionGeneration;
+    const scanPromise = (async () => {
+      // Use a channel identity when available. The fallback is isolated to this
+      // saved sign-in, never the display name or a cookie/token.
+      let sessionId = localStorage.getItem("liked-history-session:v1");
+      if (!sessionId) {
+        sessionId = crypto.randomUUID();
+        localStorage.setItem("liked-history-session:v1", sessionId);
+      }
+      const identity = this.musicHistoryId ?? this.musicOnBehalfOfUser
+        ?? `${sessionId}:${this.musicAccountIndex}:${this.musicSerializedDelegationContext ?? ""}`;
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity));
+      if (sessionGeneration !== this.likedSessionGeneration) throw new Error("Liked-song check cancelled.");
+      const scope = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      await activateLikedHistory(scope);
+      if (sessionGeneration !== this.likedSessionGeneration) throw new Error("Liked-song check cancelled.");
+      localStorage.setItem("liked-history-active:v1", scope);
+      const scan = beginLikedHistoryScan();
+      try {
+        let tracks = await this.collectPlaylistTracks(client, LIKED_SONGS_PLAYLIST_ID, true);
+        // Confirm an empty response before treating every saved song as missing.
+        if (tracks.length === 0) tracks = await this.collectPlaylistTracks(client, LIKED_SONGS_PLAYLIST_ID, true);
+        if (sessionGeneration !== this.likedSessionGeneration) throw new Error("Liked-song check cancelled.");
+        await finishLikedHistoryScan(scan, tracks);
+        await setCachedJson(this.getPlaylistTrackCacheKey(LIKED_SONGS_PLAYLIST_ID), tracks);
+        return tracks;
+      } catch (error) {
+        failLikedHistoryScan(scan);
+        throw error;
+      }
+    })();
+    this.likedScanPromise = scanPromise;
+    try {
+      return await scanPromise;
+    } finally {
+      if (this.likedScanPromise === scanPromise) this.likedScanPromise = null;
+    }
+  }
+
   private async getLikedSongs(client: Innertube): Promise<{
     playlist: Playlist;
     tracks: Track[];
   }> {
-    const tracks = await this.collectPlaylistTracks(client, LIKED_SONGS_PLAYLIST_ID);
+    const tracks = await this.scanLikedSongs(client);
 
     return {
       playlist: {
@@ -2051,7 +2135,7 @@ export class YouTubeMusicDataSource extends DataSource {
             || undefined;
           const artworkUrl = selectArtworkUrl(collectArtworkCandidates(item.account_photo));
           if (index === 0) {
-            return [{ ...fallback, name, artworkUrl, selected: item.is_selected }];
+            return [{ ...fallback, historyId: onBehalfOfUser, name, artworkUrl, selected: item.is_selected }];
           }
           if (!onBehalfOfUser && !serializedDelegationContext) return [];
           return [{
@@ -2130,7 +2214,13 @@ export class YouTubeMusicDataSource extends DataSource {
     const changed = this.musicAccountIndex !== candidate.accountIndex
       || this.musicOnBehalfOfUser !== (candidate.onBehalfOfUser ?? null)
       || this.musicSerializedDelegationContext !== (candidate.serializedDelegationContext ?? null);
+    if (changed || this.musicHistoryId !== (candidate.historyId ?? candidate.onBehalfOfUser)) {
+      ++this.likedSessionGeneration;
+      this.likedScanPromise = null;
+      deactivateLikedHistory();
+    }
     this.musicAccountIndex = candidate.accountIndex;
+    this.musicHistoryId = candidate.historyId ?? candidate.onBehalfOfUser;
     this.musicOnBehalfOfUser = candidate.onBehalfOfUser ?? null;
     this.musicSerializedDelegationContext = candidate.serializedDelegationContext ?? null;
     this.musicAccountName = candidate.name ?? "YouTube Music";
@@ -2237,15 +2327,15 @@ export class YouTubeMusicDataSource extends DataSource {
   async restoreSession(): Promise<boolean> {
     logInternalInfo("YouTubeMusicDataSource.restoreSession start");
     try {
-      this.musicCookie = await invoke<string | null>("load_youtube_music_cookie");
+      setBackendSessionActive(await invoke<boolean>("youtube_music_session_status"));
       if (!this.musicCookie) {
         logInternalInfo("YouTubeMusicDataSource.restoreSession no stored session");
         return false;
       }
-      logInternalInfo("YouTubeMusicDataSource.restoreSession credential loaded", {
-        credentialBytes: this.musicCookie.length,
-      });
+      logInternalInfo("YouTubeMusicDataSource.restoreSession backend session available");
       this.resetMusicSessionSelection();
+      const historyScope = localStorage.getItem("liked-history-active:v1");
+      if (historyScope) await activateLikedHistory(historyScope);
       await this.getMusicClient();
       logInternalInfo("YouTubeMusicDataSource.restoreSession success");
       return true;
@@ -2262,7 +2352,28 @@ export class YouTubeMusicDataSource extends DataSource {
       userCode: "Browser sign-in",
       expiresInSec: 300,
     });
-    this.musicCookie = await invoke<string>("sign_in_youtube_music");
+    setBackendSessionActive(await invoke<boolean>("sign_in_youtube_music"));
+    await this.finishSessionSignIn();
+  }
+
+  async importBrowserSession(): Promise<void> {
+    try {
+      // No credentials enter JavaScript: Rust reads the clipboard after a native
+      // confirmation and returns only a verified-session boolean.
+      setBackendSessionActive(await invoke<boolean>("import_browser_session"));
+    } catch (error) {
+      const message = error && typeof error === "object" && "message" in error
+        && typeof error.message === "string" ? error.message : "Browser-session import failed.";
+      throw new Error(message);
+    }
+    await this.finishSessionSignIn();
+  }
+
+  private async finishSessionSignIn(): Promise<void> {
+    localStorage.removeItem("liked-history-session:v1");
+    localStorage.removeItem("liked-history-active:v1");
+    this.resetMusicSessionSelection();
+    await disconnectLikedDates();
     try {
       await clearCache();
     } catch (error) {
@@ -2270,9 +2381,7 @@ export class YouTubeMusicDataSource extends DataSource {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    logInternalInfo("YouTubeMusicDataSource.signIn command completed", {
-      credentialBytes: this.musicCookie.length,
-    });
+    logInternalInfo("YouTubeMusicDataSource.signIn backend session available");
     this.resetMusicSessionSelection();
     await this.getMusicClient();
     logInternalInfo("YouTubeMusicDataSource.signIn success");
@@ -2280,8 +2389,12 @@ export class YouTubeMusicDataSource extends DataSource {
 
   async signOut(): Promise<void> {
     logInternalInfo("YouTubeMusicDataSource.signOut start");
+    await disconnectLikedDates();
     await invoke("delete_youtube_music_cookie");
     await invoke("delete_youtube_credentials");
+    localStorage.removeItem("liked-history-session:v1");
+    localStorage.removeItem("liked-history-active:v1");
+    this.resetMusicSessionSelection();
     try {
       await clearCache();
     } catch (error) {
@@ -2289,7 +2402,7 @@ export class YouTubeMusicDataSource extends DataSource {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    this.musicCookie = null;
+    setBackendSessionActive(false);
     this.resetMusicSessionSelection();
     logInternalInfo("YouTubeMusicDataSource.signOut success");
   }
@@ -2377,7 +2490,6 @@ export class YouTubeMusicDataSource extends DataSource {
     ]);
     const recentlyPlayed = this.uniqueById(recentItems.map((item) => this.toTrack(item)).filter((item): item is Track => Boolean(item)));
     const historyMessages = this.getResponseMessages(historyResponse);
-    await this.cachePlaylistTracks(LIKED_SONGS_PLAYLIST_ID, likedSongsResult.tracks);
 
     if (libraryMessages.length > 0 && albums.length === 0) {
       throw new YouTubeMusicAuthError(
@@ -2969,6 +3081,17 @@ export class YouTubeMusicDataSource extends DataSource {
     pageKey?: string,
     onUpdate?: (page: TrackPage) => void,
   ): Promise<TrackPage> {
+    if (playlist.kind === "liked-songs" || playlist.id === LIKED_SONGS_PLAYLIST_ID) {
+      if (pageKey) throw new Error("Reload Liked Songs to check the complete playlist.");
+      const cached = await getCachedJson<Track[]>(this.getPlaylistTrackCacheKey(LIKED_SONGS_PLAYLIST_ID));
+      if (cached) onUpdate?.({ tracks: cached, hasMore: false });
+      // Let library account selection finish before scanning from the playlist.
+      if (this.libraryRefreshPromise) {
+        const library = await this.libraryRefreshPromise;
+        return { tracks: library.likedSongs, hasMore: false };
+      }
+      return { tracks: await this.scanLikedSongs(await this.getMusicClient()), hasMore: false };
+    }
     this.pruneExpiredPlaylistPageSessions();
 
     const cachedTracks = pageKey
@@ -3094,6 +3217,10 @@ export class YouTubeMusicDataSource extends DataSource {
 
   private async fetchPlaylistTracksFresh(playlist: Playlist): Promise<Track[]> {
     const client = await this.getMusicClient();
+    if (playlist.kind === "liked-songs" || playlist.id === LIKED_SONGS_PLAYLIST_ID) {
+      if (this.libraryRefreshPromise) return (await this.libraryRefreshPromise).likedSongs;
+      return this.scanLikedSongs(client);
+    }
     return this.collectPlaylistTracksWithEmptyRetries(client, playlist.id, "fresh-load");
   }
 
@@ -3341,6 +3468,8 @@ export class YouTubeMusicDataSource extends DataSource {
       if (!response.success) {
         throw new Error(`YouTube returned HTTP ${response.status_code}.`);
       }
+
+      await noteLikedSongAction(track, liked);
 
       const cachedLibrary = await getCachedJson<LibrarySnapshot>(LIBRARY_CACHE_KEY);
       if (cachedLibrary) {
@@ -4283,7 +4412,7 @@ export class YouTubeMusicDataSource extends DataSource {
     track: Track,
     quality: AudioQuality,
     clientOrder: readonly ClientLabel[],
-  ): Promise<{ url: string; mimeType: string; cookie?: string }> {
+  ): Promise<{ url: string; mimeType: string }> {
     let streamUrl: string | null = null;
     let streamMimeType = "audio/mp4";
 
@@ -4353,14 +4482,13 @@ export class YouTubeMusicDataSource extends DataSource {
     return {
       url: streamUrl,
       mimeType: streamMimeType,
-      cookie: this.musicCookie ?? undefined,
     };
   }
 
   async resolveStreamUrl(
     track: Track,
     quality: AudioQuality = getStreamingQuality(),
-  ): Promise<{ url: string; mimeType: string; cookie?: string }> {
+  ): Promise<{ url: string; mimeType: string }> {
     const order: ClientLabel[] = usesAuthenticatedStreaming()
       ? ["music", "web", "anonymous"]
       : ["anonymous", "web", "music"];
@@ -4370,7 +4498,7 @@ export class YouTubeMusicDataSource extends DataSource {
   async resolveDownloadStream(
     track: Track,
     quality: AudioQuality = "normal",
-  ): Promise<{ url: string; mimeType: string; cookie?: string }> {
+  ): Promise<{ url: string; mimeType: string }> {
     if (track.source !== "youtube") {
       throw new Error("Only YouTube tracks can be downloaded.");
     }
@@ -4574,7 +4702,7 @@ export class YouTubeMusicDataSource extends DataSource {
       };
     }
 
-    const { url: streamUrl, mimeType: streamMimeType, cookie } = await this.resolveStreamUrl(track);
+    const { url: streamUrl, mimeType: streamMimeType } = await this.resolveStreamUrl(track);
 
     logInternalInfo("YouTubeMusicDataSource.getStreamData download start", {
       trackId: track.id,
@@ -4584,7 +4712,6 @@ export class YouTubeMusicDataSource extends DataSource {
       url: streamUrl,
       trackId: track.id,
       mimeType: streamMimeType,
-      cookie,
     });
     if (payload.byteLength === 0) {
       throw new Error("Audio download returned no data.");

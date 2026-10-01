@@ -73,6 +73,15 @@ If you like this project, **starring it on Github** would help A LOT!
 | YouTube Music Integration | Browse, search, like songs, and play music via an integrated search bar |
 | Account Support | Sign in to access your library, playlists, recommendations, and other account features |
 | Song Management | Add songs to playlists or queue, view your queue, quickly via Ctrl+S or right-click |
+
+## Local hardening branch status
+
+The `hardening/local-safety-review` branch is not cleared for installation on a primary computer. The YouTube iframe API now loads only in a separate player webview with no Tauri capability; the main page's script policy excludes YouTube script hosts. Privileged app windows may navigate only to this process's own localhost port. YouTube Music session cookies stay in the Rust backend: JavaScript uses a fixed, nonsecret marker, and the backend adds credentials only for approved YouTube requests. Anonymous playback was confirmed by the user in the hardened portable Windows build; signed-in library behavior remains unverified. YouTube's player-script evaluator runs in an opaque-origin frame. BotGuard proof-of-origin token generation is disabled until its interpreter can be isolated; some YouTube Music streams or downloads may therefore fail.
+
+Windows sign-in recovery is available under **Settings → About → Account → Windows: import a browser session if sign-in fails**. Use only a disposable account during testing. The instructions explain copying a single Cookie request header from a private browser session. A native confirmation gates clipboard access; Rust validates the header and verifies the signed-in flag from a fixed HTTPS YouTube Music page before saving to Windows Credential Manager. The command returns only a boolean, is restricted to the main app webview, rejects concurrent imports, and does not replace an active app session. Valid header text is removed from the current clipboard before validation; invalid text is left untouched. Clipboard history and synced copies cannot be erased by this flow: disable both before copying, and clear any existing sensitive history separately. Never paste a real session into chat, source files, or logs. No browser-profile scraping or clipboard access occurs automatically. The embedded sign-in option remains available, but the observed test attempts did not deliver a signed-in YouTube Music session.
+
+This branch also requires native confirmation before changing autostart, opens external links only to approved services, and checks for updates without installing them automatically. Local playlists must be under the system Music directory, and downloads must be under `Music/Just Another Music Client`. Playback, sign-in, and the resulting security posture need native review before installation. Application logs retain `current.log` and at most three previous sessions in the private AppData log directory; the oldest previous log is pruned on later launches. Settings can open that folder for troubleshooting.
+
 ## Download ⏬
 
 Download the **newest available installer** from the [latest release](https://github.com/2latemc/JustAnotherMusicClient/releases/latest) for either Windows, MacOs or Linux.
@@ -128,7 +137,7 @@ On some Wayland desktops, the AppImage can open a blank grey window with an EGL 
 LD_PRELOAD=/usr/lib/libwayland-client.so ./Just.Another.Music.Client_1.2.71_amd64.AppImage
 ```
 
-If playback or window controls still fail, open the app log from Settings and include it with the issue report. The exact desktop environment, display server, and distro help a lot for Linux bugs.
+If playback or window controls still fail, open the log folder from Settings and include the relevant session log with the issue report. Review it for private data before sharing. The exact desktop environment, display server, and distro help a lot for Linux bugs.
 
 ### MacOs Issues
 **MacOs may prompt you with a Keychain popup asking for permission.** The app stores one encryption key in its own Keychain entry. Your YouTube Music session is encrypted with that key before it is saved in the app data directory.
@@ -136,7 +145,7 @@ If playback or window controls still fail, open the app log from Settings and in
 If you do not need signing into YouTube Music you dont need to grant Keychain permissions. If you do it is recommended to click "always allow" in the popup to prevent MacOs from being annoying 
 
 ## Legal
-**This project DOES NOT offer any downloading functionality. This is a client providing Theme and Decorative additions for audio listening only.**
+**This project includes an optional downloader plugin, enabled by default, which can save audio files to your Music directory.** Review the rights and terms that apply to any content before using that feature.
 
 **If anyone from Google reads this:** There was no official client, I just wanted a good desktop client. Thats why I made this, please don't sue me!
 **Contact me here:** team@2late.org

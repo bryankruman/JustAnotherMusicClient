@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-download-folder-validate"
+description = "Enables the download_folder_validate command without any pre-configured scope."
+commands.allow = ["download_folder_validate"]
+
+[[permission]]
+identifier = "deny-download-folder-validate"
+description = "Denies the download_folder_validate command without any pre-configured scope."
+commands.deny = ["download_folder_validate"]
