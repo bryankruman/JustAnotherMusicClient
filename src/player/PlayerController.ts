@@ -508,6 +508,7 @@ export class PlayerController {
     if (this.handlingTrackEnd || !this.isTabActive) return;
     this.handlingTrackEnd = true;
     this.finishPlayReport();
+    this.setState({ status: "loading" });
 
     try {
       if (this.playbackOrderMode === "repeat-one" && this.state.currentTrack) {
@@ -943,41 +944,31 @@ export class PlayerController {
   }
 
   private updateDiscordPresence() {
+    // Only the playback owner may change the shared Discord activity.
+    if (!this.isTabActive) return;
+
     const currentTrack = this.state.currentTrack;
     logInternalDebug("updateDiscordPresence", { status: this.state.status, hasTrack: !!currentTrack });
     
-    // Clear presence if idle or error
-    if (this.state.status === "idle" || this.state.status === "error" || !currentTrack) {
+    // A selected or restored song is not necessarily playing audio.
+    if (this.state.status !== "playing" || !currentTrack || this.loadedTrackId !== currentTrack.id) {
       logInternalDebug("Discord.clearPresence", {});
       void DiscordRpcService.clearPresence();
       return;
     }
 
-    // Update presence with current track info
-    if (this.state.status === "playing" || this.state.status === "paused") {
-      const currentTime = this.loadedTrackId === currentTrack.id 
-        ? this.audioEngine.getCurrentTime() 
-        : (this.pendingSeekTime ?? 0);
-
-      logInternalDebug("Discord.updatePresence", {
-        title: currentTrack.title,
-        artist: currentTrack.artist,
-        status: this.state.status,
-      });
-
-      void DiscordRpcService.updatePresence({
-        title: currentTrack.title,
-        artist: currentTrack.artist,
-        album: currentTrack.album ?? "",
-        artworkUrl: getDiscordArtworkUrl(currentTrack),
-        songUrl: getYouTubeMusicTrackUrl(currentTrack),
-        artistUrl: getYouTubeMusicArtistUrl(currentTrack),
-        albumUrl: getYouTubeMusicAlbumUrl(currentTrack),
-        duration: Math.floor(currentTrack.durationSec ?? 0),
-        currentTime: Math.floor(Math.max(0, currentTime)),
-        isPlaying: this.state.status === "playing",
-      });
-    }
+    void DiscordRpcService.updatePresence({
+      title: currentTrack.title,
+      artist: currentTrack.artist,
+      album: currentTrack.album ?? "",
+      artworkUrl: getDiscordArtworkUrl(currentTrack),
+      songUrl: getYouTubeMusicTrackUrl(currentTrack),
+      artistUrl: getYouTubeMusicArtistUrl(currentTrack),
+      albumUrl: getYouTubeMusicAlbumUrl(currentTrack),
+      duration: Math.floor(currentTrack.durationSec ?? 0),
+      currentTime: Math.floor(Math.max(0, this.audioEngine.getCurrentTime())),
+      isPlaying: true,
+    });
   }
 
   async seekTo(time: number): Promise<void> {
@@ -1075,6 +1066,7 @@ export class PlayerController {
   }
 
   suspendForTabSwitch(): void {
+    if (this.isTabActive) void DiscordRpcService.clearPresence();
     this.isTabActive = false;
     this.syncScrobbleTicker();
     if (this.state.status === "playing") {
@@ -1085,13 +1077,15 @@ export class PlayerController {
   async resumeFromTabSwitch(): Promise<void> {
     this.isTabActive = true;
     this.syncScrobbleTicker();
+    void DiscordRpcService.clearPresence();
     if (this.state.status !== "playing" || !this.state.currentTrack) return;
 
     try {
       await this.ensureTrackLoaded(this.state.currentTrack);
       if (!this.isTabActive) return;
       const playbackStarted = await this.playLoadedTrack();
-      if (!playbackStarted) return;
+      if (!playbackStarted || !this.isTabActive) return;
+      this.updateDiscordPresence();
     } catch (error) {
       this.setError(error);
     }
@@ -1099,6 +1093,7 @@ export class PlayerController {
 
   dispose(): void {
     this.finishPlayReport();
+    if (this.isTabActive) void DiscordRpcService.clearPresence();
     if (this.scrobbleTimerId !== null) clearInterval(this.scrobbleTimerId);
     this.scrobbleTimerId = null;
     this.isTabActive = false;

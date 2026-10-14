@@ -1008,7 +1008,7 @@ export function SettingsPage({
               <label className={styles.settingRow}>
                 <span className={styles.toggleDescription}>
                   <strong>Discord Rich Presence</strong>
-                  <span>Show the current song, artist, album, and artwork in Discord.</span>
+                  <span>Show the current song and artwork in Discord only while music is playing.</span>
                 </span>
                 <input
                   className={styles.toggleInput}

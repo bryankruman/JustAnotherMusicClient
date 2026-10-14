@@ -5,8 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DISCORD_CLIENT_ID: &str = "1515682467154100344";
-const GITHUB_REPO: &str = "https://github.com/2latemc/JustAnotherMusicClient";
-const ACTIVITY_NAME: &str = "JustAnotherMusicClient";
+const ACTIVITY_NAME: &str = "YouTube Music";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DiscordPresenceData {
@@ -59,6 +58,10 @@ impl DiscordRpcManager {
 
     /// Update Discord presence with current track info
     pub fn update_presence(&self, data: DiscordPresenceData) -> Result<(), String> {
+        if !data.is_playing {
+            return self.clear_presence();
+        }
+
         // Ensure connection exists
         if !*self.connected.lock().map_err(|e| e.to_string())? {
             self.connect()?;
@@ -75,11 +78,7 @@ impl DiscordRpcManager {
         let duration = data.duration;
 
         // Keep owned values alive while building the activity
-        let state_str = if data.is_playing {
-            data.artist.clone()
-        } else {
-            format!("{} (paused)", data.artist)
-        };
+        let state_str = data.artist.clone();
 
         let artwork_image = data.artwork_url.clone();
         let artwork_key = artwork_image.as_deref().unwrap_or("app-icon");
@@ -102,12 +101,6 @@ impl DiscordRpcManager {
                 "large_image": artwork_key,
                 "large_text": large_text_str,
             },
-            "buttons": [
-                {
-                    "label": "Download JAMusicClient :O",
-                    "url": GITHUB_REPO,
-                }
-            ],
         });
 
         if let Some(song_url) = data.song_url {
@@ -149,7 +142,7 @@ impl DiscordRpcManager {
         Ok(())
     }
 
-    /// Clear presence (show idle)
+    /// Remove the Discord activity without connecting if nothing is playing.
     pub fn clear_presence(&self) -> Result<(), String> {
         if !*self.connected.lock().map_err(|e| e.to_string())? {
             return Ok(());
@@ -186,5 +179,26 @@ mod tests {
     fn test_discord_rpc_manager_creation() {
         let manager = DiscordRpcManager::new();
         assert!(!*manager.connected.lock().unwrap());
+    }
+
+    #[test]
+    fn paused_presence_does_not_connect_to_discord() {
+        let manager = DiscordRpcManager::new();
+        manager
+            .update_presence(DiscordPresenceData {
+                title: "Song".into(),
+                artist: "Artist".into(),
+                album: String::new(),
+                artwork_url: None,
+                song_url: None,
+                artist_url: None,
+                album_url: None,
+                duration: 180,
+                current_time: 30,
+                is_playing: false,
+            })
+            .unwrap();
+        assert!(!*manager.connected.lock().unwrap());
+        assert!(manager.client.lock().unwrap().is_none());
     }
 }

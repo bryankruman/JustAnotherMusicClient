@@ -109,6 +109,11 @@ export class DiscordRpcService {
       return;
     }
 
+    if (!data.isPlaying) {
+      await this.clearPresence();
+      return;
+    }
+
     try {
       const safeData = sanitizePresenceData(data);
       logInternalDebug("Discord.updatePresence", {
@@ -137,7 +142,7 @@ export class DiscordRpcService {
     }
   }
   /**
-   * Clear Discord presence (show as idle)
+   * Remove the Discord activity when music is not playing.
    */
   static async clearPresence(force = false): Promise<void> {
     if (!force && !this.isEnabled) {
