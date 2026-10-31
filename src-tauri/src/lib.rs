@@ -3852,6 +3852,8 @@ pub fn run() {
             )
             .title("YouTube player")
             .decorations(false)
+            // Windows draws a border and rounded corners for shadowed frameless windows.
+            .shadow(false)
             .transparent(true)
             .always_on_top(true)
             .skip_taskbar(true)
